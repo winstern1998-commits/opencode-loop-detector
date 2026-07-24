@@ -1,0 +1,7 @@
+{
+  "name": "opencode-loop-detector",
+  "private": true,
+  "dependencies": {
+    "@opencode-ai/sdk": "latest"
+  }
+}
