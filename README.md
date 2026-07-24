@@ -19,6 +19,14 @@ The detection algorithm requires ≥ `min_repeats` (default 5) repetitions rathe
 
 ### Installation
 
+#### Get the files
+
+```bash
+git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
+```
+
+Then copy `opencode-loop-detector.ts` and `loop.ts` to your project.
+
 #### Project-level
 
 Place `opencode-loop-detector.ts` and `loop.ts` in your project root, then add to `.opencode/opencode.jsonc`:
@@ -130,6 +138,14 @@ MIT
 检测算法要求尾部出现 ≥ `min_repeats`（默认 5）次重复才触发，而非仅 2 次，从而避免对路径、标识符等自然重复结构的误报。
 
 ### 安装
+
+#### 获取文件
+
+```bash
+git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
+```
+
+然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到你的项目中。
 
 #### 项目级
 
