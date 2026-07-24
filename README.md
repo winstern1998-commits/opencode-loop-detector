@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # opencode-loop-detector
 
 An [opencode](https://opencode.ai) plugin that detects LLM loops in real time during reasoning/text generation and takes corrective action (nudge → abort).
