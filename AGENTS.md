@@ -10,16 +10,16 @@ LLM 循环检测插件，在推理/文本生成阶段实时检测重复模式并
 // .opencode/opencode.json
 {
   "plugin": [
-    // ❌ 错误：会找 .opencode/opencode-loop-detector.ts（不存在）
-    // ["./opencode-loop-detector.ts", { ... }]
+    // ✅ 正确：插件文件在 .opencode/ 目录内，用 ./
+    ["./opencode-loop-detector.ts", { ... }]
 
-    // ✅ 正确：文件在项目根目录时用 ../
-    ["../opencode-loop-detector.ts", { ... }]
+    // ❌ 错误：会找 .opencode/../opencode-loop-detector.ts（项目根目录，不存在）
+    // ["../opencode-loop-detector.ts", { ... }]
   ]
 }
 ```
 
-如果插件文件就放在 `.opencode/` 目录内，则 `./` 即可。
+如果插件文件放在项目根目录，则需用 `../`。
 
 ## 模型行为注意事项
 
@@ -32,8 +32,8 @@ GLM-5.2 模型对中文"重复内容"类提示词的遵从度较低——模型�
 
 | 文件 | 职责 |
 |---|---|
-| `loop.ts` | 纯检测算法，零依赖 |
-| `opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 |
+| `.opencode/loop.ts` | 纯检测算法，零依赖 |
+| `.opencode/opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 |
 | `test.ts` | 单元测试（38 个） |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `.opencode/opencode.json` | 插件配置 + 模型设定 |

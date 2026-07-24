@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test"
-import { create, recovery, DEFAULTS, isLoopOutcome } from "./loop.ts"
+import { create, recovery, DEFAULTS, isLoopOutcome } from "./.opencode/loop.ts"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -383,7 +383,7 @@ describe("isLoopOutcome", () => {
 // Part 2: Plugin timing simulation (mock SDK client)
 // ---------------------------------------------------------------------------
 
-import LoopDetector from "./opencode-loop-detector.ts"
+import LoopDetector from "./.opencode/opencode-loop-detector.ts"
 
 // --- Mock helpers ---------------------------------------------------------
 

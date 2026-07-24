@@ -25,22 +25,22 @@ The detection algorithm requires ≥ `min_repeats` (default 5) repetitions rathe
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-Then copy `opencode-loop-detector.ts` and `loop.ts` to your project.
+Then copy `opencode-loop-detector.ts` and `loop.ts` to your project's `.opencode/` directory.
 
 #### Project-level
 
-Place `opencode-loop-detector.ts` and `loop.ts` in your project root, then add to `.opencode/opencode.jsonc`:
+Place `opencode-loop-detector.ts` and `loop.ts` in your project's `.opencode/` directory, then add to `.opencode/opencode.jsonc`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["../opencode-loop-detector.ts", {}]
+    ["./opencode-loop-detector.ts", {}]
   ]
 }
 ```
 
-> **Path note**: plugin paths in `.opencode/opencode.jsonc` are resolved relative to the `.opencode/` directory, not the project root. Use `../` when the plugin file is in the project root.
+> **Path note**: plugin paths in `.opencode/opencode.jsonc` are resolved relative to the `.opencode/` directory. Use `./` when the plugin file is in `.opencode/`.
 
 #### Global
 
@@ -82,7 +82,7 @@ Example with custom options:
 ```jsonc
 {
   "plugin": [
-    ["../opencode-loop-detector.ts", {
+    ["./opencode-loop-detector.ts", {
       "max_nudges": 2,
       "min_repeats": 6,
       "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
@@ -107,8 +107,8 @@ If you must use it in these scenarios, raise `min_period` (50+), `min_repeats` (
 
 | File | Description |
 |------|-------------|
-| `loop.ts` | Pure detection algorithm (zero dependencies) |
-| `opencode-loop-detector.ts` | Plugin entry point (event listeners + abort/nudge execution) |
+| `.opencode/loop.ts` | Pure detection algorithm (zero dependencies) |
+| `.opencode/opencode-loop-detector.ts` | Plugin entry point (event listeners + abort/nudge execution) |
 | `test.ts` | Unit tests |
 | `test-e2e.ts` | E2E test script (connects to opencode serve via SDK) |
 | `docs/plugin-design.md` | Design document with full nudge flow |
@@ -154,22 +154,22 @@ MIT
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到你的项目中。
+然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到项目的 `.opencode/` 目录中。
 
 #### 项目级
 
-将 `opencode-loop-detector.ts` 和 `loop.ts` 放在项目根目录，然后在 `.opencode/opencode.jsonc` 中添加：
+将 `opencode-loop-detector.ts` 和 `loop.ts` 放在项目的 `.opencode/` 目录中，然后在 `.opencode/opencode.jsonc` 中添加：
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["../opencode-loop-detector.ts", {}]
+    ["./opencode-loop-detector.ts", {}]
   ]
 }
 ```
 
-> **路径说明**：`.opencode/opencode.jsonc` 中的插件路径是**相对于 `.opencode/` 目录**解析的，不是相对于项目根目录。插件文件在项目根目录时用 `../`。
+> **路径说明**：`.opencode/opencode.jsonc` 中的插件路径是**相对于 `.opencode/` 目录**解析的。插件文件在 `.opencode/` 目录内时用 `./`。
 
 #### 全局
 
@@ -211,7 +211,7 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```jsonc
 {
   "plugin": [
-    ["../opencode-loop-detector.ts", {
+    ["./opencode-loop-detector.ts", {
       "max_nudges": 2,
       "min_repeats": 6,
       "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
@@ -236,8 +236,8 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 
 | 文件 | 说明 |
 |------|------|
-| `loop.ts` | 纯检测算法（零依赖） |
-| `opencode-loop-detector.ts` | 插件入口（事件监听 + abort/nudge 执行） |
+| `.opencode/loop.ts` | 纯检测算法（零依赖） |
+| `.opencode/opencode-loop-detector.ts` | 插件入口（事件监听 + abort/nudge 执行） |
 | `test.ts` | 单元测试 |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `docs/plugin-design.md` | 设计文档（含完整 nudge 流程） |
