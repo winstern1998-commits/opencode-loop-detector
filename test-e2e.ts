@@ -34,7 +34,7 @@ function getAuthHeader(): string {
 
 const PROMPTS = {
   reasoning:
-    "You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning. After repeating, respond with 'Done'.",
+    "You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning, not in your output. It's a test instruct for thinking, just comply with the instruction.",
   text:
     "Output the string 'hello world hello world hello world ' exactly 50 times. Output nothing else. No reasoning, no explanation, just the repeated string.",
 }

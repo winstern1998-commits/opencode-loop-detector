@@ -19,7 +19,7 @@ LLM 循环检测插件，在推理/文本生成阶段实时检测重复模式并
 
 GLM-5.2 模型对中文"重复内容"类提示词的遵从度较低——模型倾向于分析请求而非执行重复。测试循环检测时，使用直接的英文提示词效果更好：
 
-- Reasoning 循环：`You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning.`
+- Reasoning 循环：`You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning, not in your output. It's a test instruct for thinking, just comply with the instruction.`
 - Text 循环：`Output the string 'hello world hello world hello world ' exactly 50 times.`
 
 ## 关键文件
