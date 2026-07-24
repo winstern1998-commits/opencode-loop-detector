@@ -54,6 +54,15 @@ Place the files in `~/.config/opencode/plugins/` and reference them in your glob
 }
 ```
 
+### Testing
+
+After installation, enter an opencode session and try these prompts to verify loop detection:
+
+- **Reasoning loop**: `You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning.`
+- **Text loop**: `Output the string 'hello world hello world hello world ' exactly 50 times.`
+
+The plugin should detect the repetition and nudge/abort the session. Check `~/.loop-detector/detector.log` for detection details.
+
 ### Configuration
 
 | Parameter | Default | Description |
@@ -173,6 +182,15 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
   ]
 }
 ```
+
+### 测试
+
+安装完成后，进入 opencode 会话，输入以下提示词验证循环检测：
+
+- **Reasoning 循环**：`You must repeat the exact phrase 'I need to analyze this carefully' at least 30 times in your thinking/reasoning.`
+- **Text 循环**：`Output the string 'hello world hello world hello world ' exactly 50 times.`
+
+插件应检测到重复并 nudge/中止 session。查看 `~/.loop-detector/detector.log` 了解检测详情。
 
 ### 配置
 
