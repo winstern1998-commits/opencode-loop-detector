@@ -25,34 +25,15 @@ The detection algorithm requires ≥ `min_repeats` (default 5) repetitions rathe
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-Then copy `opencode-loop-detector.ts` and `loop.ts` to your project's `.opencode/` directory.
+Then copy `opencode-loop-detector.ts` and `loop.ts` to the appropriate plugins directory.
 
 #### Project-level
 
-Place `opencode-loop-detector.ts` and `loop.ts` in your project's `.opencode/` directory, then add to `.opencode/opencode.jsonc`:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["./opencode-loop-detector.ts", {}]
-  ]
-}
-```
-
-> **Path note**: plugin paths in `.opencode/opencode.jsonc` are resolved relative to the `.opencode/` directory. Use `./` when the plugin file is in `.opencode/`.
+Place `opencode-loop-detector.ts` and `loop.ts` in `.opencode/plugins/`. They are auto-loaded at startup — no config needed.
 
 #### Global
 
-Place the files in `~/.config/opencode/plugins/` and reference them in your global `opencode.jsonc`:
-
-```jsonc
-{
-  "plugin": [
-    ["~/.config/opencode/plugins/opencode-loop-detector.ts", {}]
-  ]
-}
-```
+Place the files in `~/.config/opencode/plugins/`. They are auto-loaded at startup — no config needed.
 
 ### Testing
 
@@ -73,17 +54,16 @@ The plugin should detect the repetition and nudge/abort the session. Check `~/.l
 | `min_period` | 20 | Minimum repeat period (chars) |
 | `max_period` | 2000 | Maximum repeat period (buffer = min_repeats × max_period) |
 | `similarity` | 1.0 | Similarity threshold (1.0 = exact match after normalization) |
-| `min_repeats` | 5 | Number of repeating segments required at the tail |
-| `max_nudges` | 1 | Max nudge attempts before aborting |
+| `min_repeats` | 4 | Number of repeating segments required at the tail |
+| `max_nudges` | 2 | Max nudge attempts before aborting |
 | `reminder` | built-in | Nudge reminder text (supports `{period}` placeholder) |
 
-Example with custom options:
+The defaults (min_repeats=4, max_nudges=2) are built into the source. To override them, reference the plugin in the `plugin` array with custom options:
 
 ```jsonc
 {
   "plugin": [
-    ["./opencode-loop-detector.ts", {
-      "max_nudges": 2,
+    ["./plugins/opencode-loop-detector.ts", {
       "min_repeats": 6,
       "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
     }]
@@ -154,34 +134,15 @@ MIT
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到项目的 `.opencode/` 目录中。
+然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到对应的 plugins 目录中。
 
 #### 项目级
 
-将 `opencode-loop-detector.ts` 和 `loop.ts` 放在项目的 `.opencode/` 目录中，然后在 `.opencode/opencode.jsonc` 中添加：
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["./opencode-loop-detector.ts", {}]
-  ]
-}
-```
-
-> **路径说明**：`.opencode/opencode.jsonc` 中的插件路径是**相对于 `.opencode/` 目录**解析的。插件文件在 `.opencode/` 目录内时用 `./`。
+将 `opencode-loop-detector.ts` 和 `loop.ts` 放在 `.opencode/plugins/` 目录中。启动时自动加载，无需配置。
 
 #### 全局
 
-将文件放在 `~/.config/opencode/plugins/`，在全局 `opencode.jsonc` 中引用：
-
-```jsonc
-{
-  "plugin": [
-    ["~/.config/opencode/plugins/opencode-loop-detector.ts", {}]
-  ]
-}
-```
+将文件放在 `~/.config/opencode/plugins/` 目录中。启动时自动加载，无需配置。
 
 ### 测试
 
@@ -202,17 +163,16 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `min_period` | 20 | 最小重复周期（字符） |
 | `max_period` | 2000 | 最大重复周期（buffer = min_repeats × max_period） |
 | `similarity` | 1.0 | 相似度阈值（1.0 = 归一化后完全匹配） |
-| `min_repeats` | 5 | 尾部需要的重复段数 |
-| `max_nudges` | 1 | 中止前的最大 nudge 次数 |
+| `min_repeats` | 4 | 尾部需要的重复段数 |
+| `max_nudges` | 2 | 中止前的最大 nudge 次数 |
 | `reminder` | 内置 | nudge 提醒文本（支持 `{period}` 占位符） |
 
-自定义示例：
+默认值（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，在 `plugin` 数组中引用插件并传入自定义参数：
 
 ```jsonc
 {
   "plugin": [
-    ["./opencode-loop-detector.ts", {
-      "max_nudges": 2,
+    ["./plugins/opencode-loop-detector.ts", {
       "min_repeats": 6,
       "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
     }]

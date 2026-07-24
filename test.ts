@@ -239,22 +239,22 @@ describe("loop detection algorithm", () => {
 
   // --- min_repeats -------------------------------------------------------
 
-  test("default min_repeats is 5", () => {
-    expect(DEFAULTS.min_repeats).toBe(5)
+  test("default min_repeats is 4", () => {
+    expect(DEFAULTS.min_repeats).toBe(4)
   })
 
-  test("does not detect when repeats below min_repeats (default 5)", () => {
+  test("does not detect when repeats below min_repeats (default 4)", () => {
     const d = create({ source: "text", min_chars: 10, check_interval: 1, min_period: 5 })
-    // period=10, repeat exactly 4 times — below default min_repeats=5
-    const text = "0123456789".repeat(4)
+    // period=10, repeat exactly 3 times — below default min_repeats=4
+    const text = "0123456789".repeat(3)
     const outcome = d.feed(text)
     expect(outcome).toBeUndefined()
   })
 
-  test("detects when repeats meet min_repeats (default 5)", () => {
+  test("detects when repeats meet min_repeats (default 4)", () => {
     const d = create({ source: "text", min_chars: 10, check_interval: 1, min_period: 5 })
-    // period=10, repeat exactly 5 times — meets default min_repeats=5
-    const text = "0123456789".repeat(5)
+    // period=10, repeat exactly 4 times — meets default min_repeats=4
+    const text = "0123456789".repeat(4)
     const outcome = d.feed(text)
     expect(outcome).toBeDefined()
   })
@@ -321,9 +321,10 @@ describe("recovery", () => {
     expect(recovery(2, { max_nudges: 2 }).action).toBe("abort")
   })
 
-  test("default max_nudges is 1", () => {
+  test("default max_nudges is 2", () => {
     expect(recovery(0).action).toBe("nudge")
-    expect(recovery(1).action).toBe("abort")
+    expect(recovery(1).action).toBe("nudge")
+    expect(recovery(2).action).toBe("abort")
   })
 
   test("custom reminder template with {period} placeholder", () => {

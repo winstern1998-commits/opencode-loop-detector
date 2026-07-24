@@ -22,8 +22,8 @@ export const DEFAULTS = {
   similarity: 1.0,
   check_interval: 100,
   min_chars: 200,
-  max_nudges: 1,
-  min_repeats: 5,
+  max_nudges: 2,
+  min_repeats: 4,
 } as const
 
 const REMINDER =

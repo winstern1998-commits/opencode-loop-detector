@@ -20,8 +20,8 @@
 | `min_period` | 20 | 最小重复周期（字符数） |
 | `max_period` | 2000 | 最大重复周期（缓冲区 = min_repeats × max_period） |
 | `similarity` | 1.0 | 相似度阈值，1.0 = 归一化后完全匹配 |
-| `min_repeats` | 5 | 末尾需匹配的重复段数，低于此值不触发（防止路径等天然 2 次重复误报） |
-| `max_nudges` | 1 | 最大 nudge 次数，超过后直接 abort |
+| `min_repeats` | 4 | 末尾需匹配的重复段数，低于此值不触发（防止路径等天然 2 次重复误报） |
+| `max_nudges` | 2 | 最大 nudge 次数，超过后直接 abort |
 
 ### similarity 计算
 

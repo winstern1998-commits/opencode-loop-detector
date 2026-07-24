@@ -2,24 +2,18 @@
 
 LLM 循环检测插件，在推理/文本生成阶段实时检测重复模式并采取纠正措施（nudge → abort）。
 
-## 插件路径解析规则
+## 插件安装方式
 
-`.opencode/opencode.json` 中的插件路径是**相对于 `.opencode/` 目录**解析的，不是相对于项目根目录。
+插件文件放在 `plugins/` 目录中，启动时自动加载，无需在配置文件中引用。
+
+- 项目级：`.opencode/plugins/`
+- 全局级：`~/.config/opencode/plugins/`
+
+默认参数（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，可在 `plugin` 数组中用 tuple 引用传参：
 
 ```jsonc
-// .opencode/opencode.json
-{
-  "plugin": [
-    // ✅ 正确：插件文件在 .opencode/ 目录内，用 ./
-    ["./opencode-loop-detector.ts", { ... }]
-
-    // ❌ 错误：会找 .opencode/../opencode-loop-detector.ts（项目根目录，不存在）
-    // ["../opencode-loop-detector.ts", { ... }]
-  ]
-}
+["./plugins/opencode-loop-detector.ts", { "min_repeats": 6 }]
 ```
-
-如果插件文件放在项目根目录，则需用 `../`。
 
 ## 模型行为注意事项
 
