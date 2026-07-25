@@ -49,8 +49,8 @@ interface SessionState {
   textSpiralDetector: ReturnType<typeof createSpiral>
   nudgeCount: number
   pendingAction:
-    | { type: "nudge"; reminder: string; period: number; source: string }
-    | { type: "abort"; period: number; attempts: number; source: string }
+    | { type: "nudge"; reminder: string; period: number; source: string; detectionType: "loop" | "spiral"; ratio?: number }
+    | { type: "abort"; period: number; attempts: number; source: string; detectionType: "loop" | "spiral"; ratio?: number }
     | null
   aborting: boolean
   idleTimeout: ReturnType<typeof setTimeout> | null
@@ -243,6 +243,8 @@ const LoopDetector: Plugin = async (input, options) => {
         reminder,
         period,
         source: outcome.source,
+        detectionType: isSpiral ? "spiral" : "loop",
+        ratio: isSpiral ? (outcome as SpiralOutcome).ratio : undefined,
       }
     } else {
       log(
@@ -254,6 +256,8 @@ const LoopDetector: Plugin = async (input, options) => {
         period,
         attempts: decision.attempts,
         source: outcome.source,
+        detectionType: isSpiral ? "spiral" : "loop",
+        ratio: isSpiral ? (outcome as SpiralOutcome).ratio : undefined,
       }
     }
 
@@ -290,12 +294,16 @@ const LoopDetector: Plugin = async (input, options) => {
     if (action.type === "nudge") {
       // Show toast so the user can see the nudge in the TUI
       // (synthetic messages are hidden from the chat view)
-      const periodInfo = action.period > 0 ? ` (period ~${action.period} chars)` : ""
+      const isSpiral = action.detectionType === "spiral"
+      const title = isSpiral ? "Spiral Detected — Nudge" : "Loop Detected — Nudge"
+      const detail = isSpiral
+        ? ` (duplicate sentence ratio ~${Math.round((action.ratio ?? 0) * 100)}%)`
+        : ` (period ~${action.period} chars)`
       try {
         await client.tui.showToast({
           body: {
-            title: "Loop Detected — Nudge",
-            message: `Repetitive ${action.source} output detected${periodInfo}. Sending reminder to redirect.`,
+            title,
+            message: `Repetitive ${action.source} output detected${detail}. Sending reminder to redirect.`,
             variant: "warning",
           },
         })
@@ -321,12 +329,16 @@ const LoopDetector: Plugin = async (input, options) => {
       state.aborting = false
     } else {
       // abort path — final termination
-      const periodInfo = action.period > 0 ? ` (period ~${action.period} chars)` : ""
+      const isSpiral = action.detectionType === "spiral"
+      const title = isSpiral ? "Spiral Detected" : "Loop Detected"
+      const detail = isSpiral
+        ? ` (duplicate sentence ratio ~${Math.round((action.ratio ?? 0) * 100)}%)`
+        : ` (period ~${action.period} chars)`
       try {
         await client.tui.showToast({
           body: {
-            title: "Loop Detected",
-            message: `Repetitive ${action.source} output detected${periodInfo} after ${action.attempts} attempt(s). Session aborted.`,
+            title,
+            message: `Repetitive ${action.source} output detected${detail} after ${action.attempts} attempt(s). Session aborted.`,
             variant: "warning",
           },
         })
