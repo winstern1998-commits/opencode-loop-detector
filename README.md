@@ -10,12 +10,17 @@ An [opencode](https://opencode.ai) plugin that detects LLM loops in real time du
 
 ### How It Works
 
-The plugin monitors streaming deltas from opencode's event system. When the model gets stuck repeating the same content (in either the reasoning or text phase), a sliding-window detector identifies the repetitive pattern and intervenes:
+The plugin monitors streaming deltas from opencode's event system. Two parallel detectors run on each delta:
+
+- **Loop detector**: identifies exact character repetition via a sliding-window period search.
+- **Spiral detector**: identifies reasoning spirals (repeated plans with different wording but no execution) via sentence-level duplicate ratio.
+
+When either detector triggers, the plugin intervenes:
 
 1. **Nudge** — interrupts the current generation and injects a synthetic reminder telling the model to stop repeating and try a different approach.
 2. **Abort** — if the model loops again after being nudged (up to `max_nudges` times), the session is aborted with a toast notification.
 
-The detection algorithm requires ≥ `min_repeats` (default 5) repetitions rather than just 2, which prevents false positives on paths, identifiers, and other naturally repeating structures.
+The loop detection algorithm requires ≥ `min_repeats` (default 4) repetitions rather than just 2, which prevents false positives on paths, identifiers, and other naturally repeating structures.
 
 ### Installation
 
@@ -25,11 +30,11 @@ The detection algorithm requires ≥ `min_repeats` (default 5) repetitions rathe
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-Then copy `opencode-loop-detector.ts` and `loop.ts` to the appropriate plugins directory.
+Then copy `opencode-loop-detector.ts`, `loop.ts`, and `spiral.ts` to the appropriate plugins directory.
 
 #### Project-level
 
-Place `opencode-loop-detector.ts` and `loop.ts` in `.opencode/plugins/`. They are auto-loaded at startup — no config needed.
+Place `opencode-loop-detector.ts`, `loop.ts`, and `spiral.ts` in `.opencode/plugins/`. They are auto-loaded at startup — no config needed.
 
 #### Global
 
@@ -56,6 +61,12 @@ The plugin should detect the repetition and nudge/abort the session. Check `~/.l
 | `similarity` | 1.0 | Similarity threshold (1.0 = exact match after normalization) |
 | `min_repeats` | 4 | Number of repeating segments required at the tail |
 | `max_nudges` | 2 | Max nudge attempts before aborting |
+| `spiral_min_chars` | 2000 | Spiral detector: minimum accumulated characters before detection starts |
+| `spiral_check_interval` | 100 | Spiral detector: characters between detection checks |
+| `spiral_window_size` | 8000 | Spiral detector: sliding window size |
+| `spiral_dup_threshold` | 0.4 | Spiral detector: duplicate sentence ratio threshold |
+| `spiral_min_sentence_len` | 15 | Spiral detector: ignore sentences shorter than this |
+| `spiral_min_sentences` | 20 | Spiral detector: minimum sentence count in window |
 | `reminder` | built-in | Nudge reminder text (supports `{period}` placeholder) |
 
 The defaults (min_repeats=4, max_nudges=2) are built into the source. To override them, reference the plugin in the `plugin` array with custom options:
@@ -87,7 +98,8 @@ If you must use it in these scenarios, raise `min_period` (50+), `min_repeats` (
 
 | File | Description |
 |------|-------------|
-| `.opencode/loop.ts` | Pure detection algorithm (zero dependencies) |
+| `.opencode/loop.ts` | Loop detection algorithm (zero dependencies) |
+| `.opencode/spiral.ts` | Spiral detection algorithm (zero dependencies) |
 | `.opencode/opencode-loop-detector.ts` | Plugin entry point (event listeners + abort/nudge execution) |
 | `test.ts` | Unit tests |
 | `test-e2e.ts` | E2E test script (connects to opencode serve via SDK) |
@@ -119,12 +131,17 @@ MIT
 
 ### 工作原理
 
-插件监听 opencode 事件系统的流式 delta。当模型陷入重复相同内容时（推理阶段或文本阶段均可），滑动窗口检测器识别出重复模式并介入：
+插件监听 opencode 事件系统的流式 delta。两个检测器并行运行：
+
+- **Loop 检测器**：通过滑动窗口周期搜索，检测精确字符重复。
+- **Spiral 检测器**：通过句子级重复率，检测推理螺旋（反复规划相同行动但措辞不同、从不执行）。
+
+任一检测器触发时，插件介入：
 
 1. **Nudge（轻推）** — 中断当前生成，注入一条合成提醒，告诉模型停止重复并尝试不同方法。
 2. **Abort（中止）** — 如果模型在被 nudge 后（最多 `max_nudges` 次）再次循环，则中止 session 并弹出 toast 通知。
 
-检测算法要求尾部出现 ≥ `min_repeats`（默认 5）次重复才触发，而非仅 2 次，从而避免对路径、标识符等自然重复结构的误报。
+Loop 检测算法要求尾部出现 ≥ `min_repeats`（默认 4）次重复才触发，而非仅 2 次，从而避免对路径、标识符等自然重复结构的误报。
 
 ### 安装
 
@@ -134,11 +151,11 @@ MIT
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-然后将 `opencode-loop-detector.ts` 和 `loop.ts` 复制到对应的 plugins 目录中。
+然后将 `opencode-loop-detector.ts`、`loop.ts` 和 `spiral.ts` 复制到对应的 plugins 目录中。
 
 #### 项目级
 
-将 `opencode-loop-detector.ts` 和 `loop.ts` 放在 `.opencode/plugins/` 目录中。启动时自动加载，无需配置。
+将 `opencode-loop-detector.ts`、`loop.ts` 和 `spiral.ts` 放在 `.opencode/plugins/` 目录中。启动时自动加载，无需配置。
 
 #### 全局
 
@@ -165,6 +182,12 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `similarity` | 1.0 | 相似度阈值（1.0 = 归一化后完全匹配） |
 | `min_repeats` | 4 | 尾部需要的重复段数 |
 | `max_nudges` | 2 | 中止前的最大 nudge 次数 |
+| `spiral_min_chars` | 2000 | Spiral 检测器：开始检测前需累积的最小字符数 |
+| `spiral_check_interval` | 100 | Spiral 检测器：两次检测之间的字符间隔 |
+| `spiral_window_size` | 8000 | Spiral 检测器：滑动窗口大小 |
+| `spiral_dup_threshold` | 0.4 | Spiral 检测器：重复句子率阈值 |
+| `spiral_min_sentence_len` | 15 | Spiral 检测器：忽略短于此长度的句子 |
+| `spiral_min_sentences` | 20 | Spiral 检测器：窗口内最少句子数 |
 | `reminder` | 内置 | nudge 提醒文本（支持 `{period}` 占位符） |
 
 默认值（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，在 `plugin` 数组中引用插件并传入自定义参数：
@@ -196,7 +219,8 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 
 | 文件 | 说明 |
 |------|------|
-| `.opencode/loop.ts` | 纯检测算法（零依赖） |
+| `.opencode/loop.ts` | Loop 检测算法（零依赖） |
+| `.opencode/spiral.ts` | Spiral 检测算法（零依赖） |
 | `.opencode/opencode-loop-detector.ts` | 插件入口（事件监听 + abort/nudge 执行） |
 | `test.ts` | 单元测试 |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |

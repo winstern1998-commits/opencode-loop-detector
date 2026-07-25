@@ -89,9 +89,9 @@ recovery(nudgeCount, { max_nudges, period })
        ├── state.pendingAction = null            ← 立即清空，防止并发 session.idle 导致重复执行
        ├── 清除 idleTimeout
        │
-       ├── client.tui.showToast({                ← 在 TUI 中显示通知（用户可见）
-       │     title: "Loop Detected — Nudge",
-       │     message: "Repetitive {source} output detected (period ~{period} chars). Sending reminder to redirect.",
+        ├── client.tui.showToast({                ← 在 TUI 中显示通知（用户可见）
+        │     title: "Loop Detected — Nudge" 或 "Spiral Detected — Nudge"（按检测类型区分）
+        │     message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%). Sending reminder to redirect.",
        │     variant: "warning"
        │   })
        │
@@ -131,9 +131,9 @@ recovery(nudgeCount, { max_nudges, period })
    └── executePendingAction(sessionID, state)
        │
        ├── state.pendingAction = null
-       ├── client.tui.showToast({                ← 最终 abort 通知
-       │     title: "Loop Detected",
-       │     message: "Repetitive {source} output detected (period ~{period} chars) after {attempts} attempt(s). Session aborted.",
+        ├── client.tui.showToast({                ← 最终 abort 通知
+        │     title: "Loop Detected" 或 "Spiral Detected"（按检测类型区分）
+        │     message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%) after {attempts} attempt(s). Session aborted.",
        │     variant: "warning"
        │   })
        └── sessions.delete(sessionID)            ← 清理会话状态
@@ -145,9 +145,9 @@ recovery(nudgeCount, { max_nudges, period })
 |------|---------|
 | 模型开始生成 | 流式回复正常显示 |
 | 循环检测到 | 流式回复被中断（interrupted） |
-| Nudge toast | TUI 右下角出现警告通知："Loop Detected — Nudge" |
+| Nudge toast | TUI 右下角出现警告通知：Loop 显示 "Loop Detected — Nudge"，Spiral 显示 "Spiral Detected — Nudge" |
 | Nudge 消息 | 不可见（synthetic，TUI 不渲染） |
 | 第二次流式回复 | 模型重新生成，流式回复正常显示 |
 | 再次检测到循环 | 流式回复再次被中断 |
-| Abort toast | TUI 右下角出现警告通知："Loop Detected" |
+| Abort toast | TUI 右下角出现警告通知：Loop 显示 "Loop Detected"，Spiral 显示 "Spiral Detected" |
 | 会话结束 | 不再生成 |
