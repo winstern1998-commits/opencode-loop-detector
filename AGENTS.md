@@ -26,9 +26,10 @@ GLM-5.2 模型对中文"重复内容"类提示词的遵从度较低——模型�
 
 | 文件 | 职责 |
 |---|---|
-| `.opencode/loop.ts` | 纯检测算法，零依赖 |
+| `.opencode/loop.ts` | 精确字符循环检测算法，零依赖 |
+| `.opencode/spiral.ts` | 推理螺旋检测算法（句子级重复率），零依赖 |
 | `.opencode/opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 |
-| `test.ts` | 单元测试（38 个） |
+| `test.ts` | 单元测试（56 个） |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `.opencode/opencode.json` | 插件配置 + 模型设定 |
 | `docs/plugin-design.md` | 功能描述、配置参数、nudge 完整流程 |

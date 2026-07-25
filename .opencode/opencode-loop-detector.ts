@@ -9,6 +9,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 import { create, recovery, DEFAULTS, type LoopOutcome } from "./loop.ts"
+import { create as createSpiral, SPIRAL_DEFAULTS, type SpiralOutcome } from "./spiral.ts"
 import { mkdirSync, appendFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -27,7 +28,15 @@ interface LoopDetectorConfig {
   min_repeats?: number
   max_nudges?: number
   reminder?: string
+  spiral_min_chars?: number
+  spiral_check_interval?: number
+  spiral_window_size?: number
+  spiral_dup_threshold?: number
+  spiral_min_sentence_len?: number
+  spiral_min_sentences?: number
 }
+
+type DetectionOutcome = LoopOutcome | SpiralOutcome
 
 // ---------------------------------------------------------------------------
 // Per-session state
@@ -36,6 +45,8 @@ interface LoopDetectorConfig {
 interface SessionState {
   reasoningDetector: ReturnType<typeof create>
   textDetector: ReturnType<typeof create>
+  reasoningSpiralDetector: ReturnType<typeof createSpiral>
+  textSpiralDetector: ReturnType<typeof createSpiral>
   nudgeCount: number
   pendingAction:
     | { type: "nudge"; reminder: string; period: number; source: string }
@@ -69,6 +80,10 @@ function log(message: string): void {
 
 const IDLE_TIMEOUT_MS = 5000
 
+const SPIRAL_REMINDER =
+  "<system-reminder>\nYour reasoning is stuck in a repetitive spiral (duplicate sentence ratio ~{ratio}%). " +
+  "You are repeating the same plans without executing them. Stop planning and take a concrete action now.\n</system-reminder>"
+
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
@@ -88,6 +103,12 @@ const LoopDetector: Plugin = async (input, options) => {
     max_nudges: opts.max_nudges ?? DEFAULTS.max_nudges,
     enabled: opts.enabled,
     reminder: opts.reminder,
+    spiral_min_chars: opts.spiral_min_chars ?? SPIRAL_DEFAULTS.min_chars,
+    spiral_check_interval: opts.spiral_check_interval ?? SPIRAL_DEFAULTS.check_interval,
+    spiral_window_size: opts.spiral_window_size ?? SPIRAL_DEFAULTS.window_size,
+    spiral_dup_threshold: opts.spiral_dup_threshold ?? SPIRAL_DEFAULTS.dup_threshold,
+    spiral_min_sentence_len: opts.spiral_min_sentence_len ?? SPIRAL_DEFAULTS.min_sentence_len,
+    spiral_min_sentences: opts.spiral_min_sentences ?? SPIRAL_DEFAULTS.min_sentences,
   }
 
   if (config.enabled === false) {
@@ -125,6 +146,15 @@ const LoopDetector: Plugin = async (input, options) => {
       min_repeats: config.min_repeats,
     }
 
+    const spiralOpts = {
+      min_chars: config.spiral_min_chars,
+      check_interval: config.spiral_check_interval,
+      window_size: config.spiral_window_size,
+      dup_threshold: config.spiral_dup_threshold,
+      min_sentence_len: config.spiral_min_sentence_len,
+      min_sentences: config.spiral_min_sentences,
+    }
+
     state = {
       reasoningDetector: create({
         source: "reasoning",
@@ -135,6 +165,16 @@ const LoopDetector: Plugin = async (input, options) => {
         source: "text",
         ...detectorOpts,
         on_detected: (o) => log(`[${sessionID}] text loop detected: period=${o.period}`),
+      }),
+      reasoningSpiralDetector: createSpiral({
+        source: "reasoning",
+        ...spiralOpts,
+        on_detected: (o) => log(`[${sessionID}] reasoning spiral detected: ratio=${o.ratio.toFixed(2)}`),
+      }),
+      textSpiralDetector: createSpiral({
+        source: "text",
+        ...spiralOpts,
+        on_detected: (o) => log(`[${sessionID}] text spiral detected: ratio=${o.ratio.toFixed(2)}`),
       }),
       nudgeCount: 0,
       pendingAction: null,
@@ -172,32 +212,46 @@ const LoopDetector: Plugin = async (input, options) => {
   }
 
   // -------------------------------------------------------------------------
-  // handleLoopDetected
+  // handleDetected
   // -------------------------------------------------------------------------
 
-  async function handleLoopDetected(sessionID: string, outcome: LoopOutcome): Promise<void> {
+  async function handleDetected(sessionID: string, outcome: DetectionOutcome): Promise<void> {
     const state = getOrCreateState(sessionID)
     state.aborting = true
 
+    const isSpiral = outcome.type === "spiral"
+    const period = isSpiral ? 0 : outcome.period
+
     const decision = recovery(state.nudgeCount, {
       max_nudges: config.max_nudges,
-      reminder: config.reminder,
-      period: outcome.period,
+      reminder: isSpiral ? SPIRAL_REMINDER : config.reminder,
+      period,
     })
 
     if (decision.action === "nudge") {
-      log(`[${sessionID}] nudge decided (attempt=${state.nudgeCount}, period=${outcome.period})`)
+      // recovery() replaces {period} in the template; spiral uses {ratio} so
+      // apply the spiral reminder manually when needed.
+      const reminder = isSpiral
+        ? SPIRAL_REMINDER.replace("{ratio}", String(Math.round((outcome as SpiralOutcome).ratio * 100)))
+        : decision.reminder
+      log(
+        `[${sessionID}] nudge decided (attempt=${state.nudgeCount}, ` +
+          `${isSpiral ? `ratio=${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `period=${period}`})`,
+      )
       state.pendingAction = {
         type: "nudge",
-        reminder: decision.reminder,
-        period: outcome.period,
+        reminder,
+        period,
         source: outcome.source,
       }
     } else {
-      log(`[${sessionID}] abort decided (attempts=${decision.attempts}, period=${outcome.period})`)
+      log(
+        `[${sessionID}] abort decided (attempts=${decision.attempts}, ` +
+          `${isSpiral ? `ratio=${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `period=${period}`})`,
+      )
       state.pendingAction = {
         type: "abort",
-        period: outcome.period,
+        period,
         attempts: decision.attempts,
         source: outcome.source,
       }
@@ -236,11 +290,12 @@ const LoopDetector: Plugin = async (input, options) => {
     if (action.type === "nudge") {
       // Show toast so the user can see the nudge in the TUI
       // (synthetic messages are hidden from the chat view)
+      const periodInfo = action.period > 0 ? ` (period ~${action.period} chars)` : ""
       try {
         await client.tui.showToast({
           body: {
             title: "Loop Detected — Nudge",
-            message: `Repetitive ${action.source} output detected (period ~${action.period} chars). Sending reminder to redirect.`,
+            message: `Repetitive ${action.source} output detected${periodInfo}. Sending reminder to redirect.`,
             variant: "warning",
           },
         })
@@ -261,14 +316,17 @@ const LoopDetector: Plugin = async (input, options) => {
       state.nudgeCount++
       state.reasoningDetector.reset()
       state.textDetector.reset()
+      state.reasoningSpiralDetector.reset()
+      state.textSpiralDetector.reset()
       state.aborting = false
     } else {
       // abort path — final termination
+      const periodInfo = action.period > 0 ? ` (period ~${action.period} chars)` : ""
       try {
         await client.tui.showToast({
           body: {
             title: "Loop Detected",
-            message: `Repetitive ${action.source} output detected (period ~${action.period} chars) after ${action.attempts} attempt(s). Session aborted.`,
+            message: `Repetitive ${action.source} output detected${periodInfo} after ${action.attempts} attempt(s). Session aborted.`,
             variant: "warning",
           },
         })
@@ -304,7 +362,16 @@ const LoopDetector: Plugin = async (input, options) => {
             const detector = part.type === "reasoning" ? state.reasoningDetector : state.textDetector
             const outcome = detector.feed(delta)
             if (outcome) {
-              await handleLoopDetected(sessionID, outcome)
+              await handleDetected(sessionID, outcome)
+            }
+            // Skip spiral feed if loop already triggered
+            if (state.aborting || state.pendingAction) return
+
+            const spiralDetector =
+              part.type === "reasoning" ? state.reasoningSpiralDetector : state.textSpiralDetector
+            const spiralOutcome = spiralDetector.feed(delta)
+            if (spiralOutcome) {
+              await handleDetected(sessionID, spiralOutcome)
             }
           }
         }
@@ -335,7 +402,16 @@ const LoopDetector: Plugin = async (input, options) => {
         const detector = partType === "reasoning" ? state.reasoningDetector : state.textDetector
         const outcome = detector.feed(props.delta)
         if (outcome) {
-          await handleLoopDetected(sessionID, outcome)
+          await handleDetected(sessionID, outcome)
+        }
+        // Skip spiral feed if loop already triggered
+        if (state.aborting || state.pendingAction) return
+
+        const spiralDetector =
+          partType === "reasoning" ? state.reasoningSpiralDetector : state.textSpiralDetector
+        const spiralOutcome = spiralDetector.feed(props.delta)
+        if (spiralOutcome) {
+          await handleDetected(sessionID, spiralOutcome)
         }
         return
       }
@@ -353,6 +429,8 @@ const LoopDetector: Plugin = async (input, options) => {
           // Normal completion — reset detectors and counters
           state.reasoningDetector.reset()
           state.textDetector.reset()
+          state.reasoningSpiralDetector.reset()
+          state.textSpiralDetector.reset()
           state.nudgeCount = 0
           state.aborting = false
         }

@@ -9,6 +9,12 @@
 
 import { describe, test, expect } from "bun:test"
 import { create, recovery, DEFAULTS, isLoopOutcome } from "./.opencode/loop.ts"
+import {
+  create as createSpiral,
+  SPIRAL_DEFAULTS,
+  isSpiralOutcome,
+  type SpiralOutcome,
+} from "./.opencode/spiral.ts"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -377,6 +383,159 @@ describe("isLoopOutcome", () => {
     expect(isLoopOutcome({})).toBe(false)
     expect(isLoopOutcome("loop")).toBe(false)
     expect(isLoopOutcome(42)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// spiral detection algorithm tests
+// ---------------------------------------------------------------------------
+
+describe("spiral detection algorithm", () => {
+  // Helper: build a high-duplicate text by repeating a sentence many times
+  // with a few unique sentences interspersed so ratio stays > threshold.
+  function spiralText(repeatSentence: string, repeats: number, uniqueEvery: number = 8): string {
+    const parts: string[] = []
+    for (let i = 0; i < repeats; i++) {
+      parts.push(repeatSentence)
+      if (i % uniqueEvery === 0) {
+        parts.push(`This is a unique filler sentence number ${i} to vary the content.`)
+      }
+    }
+    return parts.join(" ")
+  }
+
+  test("does not trigger on non-repeating text", () => {
+    const d = createSpiral({ source: "reasoning" })
+    const outcome = d.feed(nonRepeating(10000))
+    expect(outcome).toBeUndefined()
+  })
+
+  test("triggers on highly repetitive text", () => {
+    const d = createSpiral({ source: "reasoning", min_chars: 500, check_interval: 50 })
+    const sentence = "I need to analyze this carefully and consider the next step."
+    const text = spiralText(sentence, 40, 10)
+    const outcome = d.feed(text)
+    expect(outcome).toBeDefined()
+    expect(outcome!.type).toBe("spiral")
+    expect(outcome!.ratio).toBeGreaterThanOrEqual(0.4)
+    expect(outcome!.source).toBe("reasoning")
+  })
+
+  test("min_chars threshold prevents detection below threshold", () => {
+    const d = createSpiral({ source: "text", min_chars: 5000, check_interval: 10 })
+    const sentence = "I need to analyze this carefully and consider the next step."
+    // Feed only ~1000 chars of repetitive text — below min_chars
+    const text = spiralText(sentence, 15, 100)
+    expect(text.length).toBeLessThan(5000)
+    const outcome = d.feed(text)
+    expect(outcome).toBeUndefined()
+  })
+
+  test("min_sentences threshold prevents detection with too few sentences", () => {
+    const d = createSpiral({
+      source: "text",
+      min_chars: 100,
+      check_interval: 10,
+      min_sentences: 50,
+    })
+    // Long sentences but only a few of them
+    const long = "This is a very long unique sentence that exceeds the minimum length requirement. ".repeat(3)
+    const text = (long + long).slice(0, 2000) // few sentences, lots of chars
+    const outcome = d.feed(text)
+    expect(outcome).toBeUndefined()
+  })
+
+  test("dup_threshold is adjustable (low threshold detects mild repetition)", () => {
+    const d = createSpiral({
+      source: "reasoning",
+      min_chars: 500,
+      check_interval: 50,
+      dup_threshold: 0.1,
+    })
+    // Mix of repeated and unique sentences — ratio ~0.2, below default 0.4
+    // but above 0.1
+    const parts: string[] = []
+    for (let i = 0; i < 30; i++) {
+      parts.push("I should consider the approach carefully before proceeding.")
+      parts.push(`Unique observation number ${i} about the current situation.`)
+      parts.push(`Another distinct thought ${i} regarding implementation details.`)
+      parts.push(`Yet another different angle ${i} on the problem space.`)
+      parts.push("I should consider the approach carefully before proceeding.")
+    }
+    const outcome = d.feed(parts.join(" "))
+    expect(outcome).toBeDefined()
+    expect(outcome!.ratio).toBeGreaterThanOrEqual(0.1)
+  })
+
+  test("reset() clears state and prevents re-detection of old content", () => {
+    const d = createSpiral({ source: "text", min_chars: 500, check_interval: 50 })
+    const sentence = "I need to analyze this carefully and consider the next step."
+    const text = spiralText(sentence, 40, 10)
+    const outcome1 = d.feed(text)
+    expect(outcome1).toBeDefined()
+    d.reset()
+    // After reset, feeding non-repeating text should not trigger
+    const outcome2 = d.feed(nonRepeating(5000))
+    expect(outcome2).toBeUndefined()
+  })
+
+  test("source field matches creation parameter", () => {
+    for (const source of ["reasoning", "text"] as const) {
+      const d = createSpiral({ source, min_chars: 500, check_interval: 50 })
+      const sentence = "I need to analyze this carefully and consider the next step."
+      const outcome = d.feed(spiralText(sentence, 40, 10))
+      expect(outcome).toBeDefined()
+      expect(outcome!.source).toBe(source)
+    }
+  })
+
+  test("streaming feed is equivalent to one-shot feed", () => {
+    const sentence = "I need to analyze this carefully and consider the next step."
+    const text = spiralText(sentence, 40, 10)
+
+    // One-shot
+    const oneShot = createSpiral({ source: "reasoning", min_chars: 500, check_interval: 50 })
+    const r1 = oneShot.feed(text)
+
+    // Streamed in 100-char chunks
+    const streamed = createSpiral({ source: "reasoning", min_chars: 500, check_interval: 50 })
+    let r2: SpiralOutcome | undefined
+    for (let i = 0; i < text.length; i += 100) {
+      r2 = streamed.feed(text.slice(i, i + 100))
+      if (r2) break
+    }
+
+    expect(r1).toBeDefined()
+    expect(r2).toBeDefined()
+    // Ratios may differ slightly due to window boundary alignment, but both
+    // must trigger and be in the same ballpark.
+    expect(r2!.ratio).toBeGreaterThan(0)
+    expect(Math.abs(r1!.ratio - r2!.ratio)).toBeLessThan(0.2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isSpiralOutcome() tests
+// ---------------------------------------------------------------------------
+
+describe("isSpiralOutcome", () => {
+  test("returns true for valid SpiralOutcome", () => {
+    expect(isSpiralOutcome({ type: "spiral", ratio: 0.5, source: "text" })).toBe(true)
+  })
+
+  test("returns false for null", () => {
+    expect(isSpiralOutcome(null)).toBe(false)
+  })
+
+  test("returns false for undefined", () => {
+    expect(isSpiralOutcome(undefined)).toBe(false)
+  })
+
+  test("returns false for non-spiral objects", () => {
+    expect(isSpiralOutcome({ type: "loop", period: 10, source: "text" })).toBe(false)
+    expect(isSpiralOutcome({})).toBe(false)
+    expect(isSpiralOutcome("spiral")).toBe(false)
+    expect(isSpiralOutcome(42)).toBe(false)
   })
 })
 
