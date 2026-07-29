@@ -28,8 +28,9 @@ GLM-5.2 模型对中文"重复内容"类提示词的遵从度较低——模型�
 |---|---|
 | `.opencode/loop.ts` | 精确字符循环检测算法，零依赖 |
 | `.opencode/spiral.ts` | 推理螺旋检测算法（句子级重复率），零依赖 |
-| `.opencode/opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 |
-| `test.ts` | 单元测试（56 个） |
+| `.opencode/opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 + stats tool |
+| `.opencode/stats.ts` | 累计计数模块（检测/nudge/abort，按类型×来源细分），零依赖 |
+| `test.ts` | 单元测试（69 个） |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `.opencode/opencode.json` | 插件配置 + 模型设定 |
 | `docs/plugin-design.md` | 功能描述、配置参数、nudge 完整流程 |
@@ -44,6 +45,8 @@ opencode 1.17.x 的流式 delta 通过 `message.part.delta` 事件传递（不�
 ## 日志
 
 插件运行日志写入 `~/.loop-detector/detector.log`，可用于调试和验证。
+
+累计计数（检测/nudge/abort 次数）持久化到 `~/.loop-detector/stats.json`，跨重启保留。注册了 `loop_detector_stats` tool 供主 agent 查询（支持 `reset` 参数清零）。
 
 ## 文档同步
 

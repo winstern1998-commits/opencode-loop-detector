@@ -8,8 +8,19 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin"
 import { create, recovery, DEFAULTS, type LoopOutcome } from "./loop.ts"
 import { create as createSpiral, SPIRAL_DEFAULTS, type SpiralOutcome } from "./spiral.ts"
+import {
+  createEmptyStats,
+  record as recordStat,
+  format as formatStats,
+  loadStats,
+  saveStats,
+  type Stats,
+  type DetectionType,
+  type Source,
+} from "./stats.ts"
 import { mkdirSync, appendFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -34,6 +45,7 @@ interface LoopDetectorConfig {
   spiral_dup_threshold?: number
   spiral_min_sentence_len?: number
   spiral_min_sentences?: number
+  stats_path?: string
 }
 
 type DetectionOutcome = LoopOutcome | SpiralOutcome
@@ -63,6 +75,7 @@ interface SessionState {
 
 const LOG_DIR = join(homedir(), ".loop-detector")
 const LOG_FILE = join(LOG_DIR, "detector.log")
+const DEFAULT_STATS_PATH = join(LOG_DIR, "stats.json")
 
 function log(message: string): void {
   const ts = new Date().toISOString()
@@ -109,6 +122,7 @@ const LoopDetector: Plugin = async (input, options) => {
     spiral_dup_threshold: opts.spiral_dup_threshold ?? SPIRAL_DEFAULTS.dup_threshold,
     spiral_min_sentence_len: opts.spiral_min_sentence_len ?? SPIRAL_DEFAULTS.min_sentence_len,
     spiral_min_sentences: opts.spiral_min_sentences ?? SPIRAL_DEFAULTS.min_sentences,
+    stats_path: opts.stats_path,
   }
 
   if (config.enabled === false) {
@@ -117,6 +131,12 @@ const LoopDetector: Plugin = async (input, options) => {
   }
 
   log(`Plugin loaded. serverUrl=${serverUrl.href} config=${JSON.stringify(config)}`)
+
+  const statsPath = config.stats_path ?? DEFAULT_STATS_PATH
+  let stats: Stats = loadStats(statsPath)
+  log(
+    `Stats loaded from ${statsPath}: ${stats.totals.detect} detect(s), ${stats.totals.nudge} nudge(s), ${stats.totals.abort} abort(s)`,
+  )
 
   const sessions = new Map<string, SessionState>()
 
@@ -222,6 +242,12 @@ const LoopDetector: Plugin = async (input, options) => {
     const isSpiral = outcome.type === "spiral"
     const period = isSpiral ? 0 : outcome.period
 
+    // Record detection in cumulative stats
+    const detType: DetectionType = isSpiral ? "spiral" : "loop"
+    const src: Source = outcome.source
+    recordStat(stats, detType, src, "detect")
+    saveStats(statsPath, stats)
+
     const decision = recovery(state.nudgeCount, {
       max_nudges: config.max_nudges,
       reminder: isSpiral ? SPIRAL_REMINDER : config.reminder,
@@ -322,6 +348,8 @@ const LoopDetector: Plugin = async (input, options) => {
         log(`[${sessionID}] promptAsync failed: ${String(err)}`)
       }
       state.nudgeCount++
+      recordStat(stats, action.detectionType as DetectionType, action.source as Source, "nudge")
+      saveStats(statsPath, stats)
       state.reasoningDetector.reset()
       state.textDetector.reset()
       state.reasoningSpiralDetector.reset()
@@ -346,6 +374,8 @@ const LoopDetector: Plugin = async (input, options) => {
         log(`[${sessionID}] showToast failed: ${String(err)}`)
       }
       log(`[${sessionID}] final abort, cleaning up session state`)
+      recordStat(stats, action.detectionType as DetectionType, action.source as Source, "abort")
+      saveStats(statsPath, stats)
       sessions.delete(sessionID)
     }
   }
@@ -448,6 +478,28 @@ const LoopDetector: Plugin = async (input, options) => {
         }
         return
       }
+    },
+
+    tool: {
+      loop_detector_stats: tool({
+        description:
+          "Query cumulative statistics of the loop-detector plugin: how many loops/spirals were detected and how many nudges/aborts were issued, broken down by detection type (loop/spiral) and source (reasoning/text). Set reset=true to reset all counters to zero.",
+        args: {
+          reset: tool.schema
+            .boolean()
+            .optional()
+            .describe("If true, reset all counters to zero after returning current stats. Default: false."),
+        },
+        async execute(args) {
+          if (args.reset) {
+            stats = createEmptyStats()
+            saveStats(statsPath, stats)
+            log("Stats reset via loop_detector_stats tool")
+            return { title: "Loop Detector Stats (reset)", output: formatStats(stats) }
+          }
+          return { title: "Loop Detector Stats", output: formatStats(stats) }
+        },
+      }),
     },
 
     dispose: async () => {

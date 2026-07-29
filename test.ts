@@ -15,6 +15,15 @@ import {
   isSpiralOutcome,
   type SpiralOutcome,
 } from "./.opencode/spiral.ts"
+import {
+  createEmptyStats,
+  record as recordStat,
+  format as formatStats,
+  loadStats,
+  saveStats,
+  type Stats,
+} from "./.opencode/stats.ts"
+import { unlinkSync, writeFileSync } from "node:fs"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -793,5 +802,241 @@ describe("plugin timing simulation", () => {
 
     expect(hooks.event).toBeUndefined()
     expect(hooks.dispose).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// stats module unit tests
+// ---------------------------------------------------------------------------
+
+describe("stats module", () => {
+  test("createEmptyStats returns all-zero structure with null timestamps", () => {
+    const s = createEmptyStats()
+    for (const t of ["loop", "spiral"] as const) {
+      for (const src of ["reasoning", "text"] as const) {
+        expect(s.counts[t][src].detect).toBe(0)
+        expect(s.counts[t][src].nudge).toBe(0)
+        expect(s.counts[t][src].abort).toBe(0)
+      }
+    }
+    expect(s.totals).toEqual({ detect: 0, nudge: 0, abort: 0 })
+    expect(s.firstSeen).toBeNull()
+    expect(s.lastSeen).toBeNull()
+  })
+
+  test("record increments the right cell, totals, and sets timestamps", () => {
+    const s = createEmptyStats()
+    recordStat(s, "loop", "text", "detect")
+    expect(s.counts.loop.text.detect).toBe(1)
+    expect(s.totals.detect).toBe(1)
+    expect(s.firstSeen).not.toBeNull()
+    expect(s.lastSeen).not.toBeNull()
+    // ISO string sanity check
+    expect(() => new Date(s.firstSeen!).toISOString()).not.toThrow()
+  })
+
+  test("record multiple distinct type/source/action increments cells independently", () => {
+    const s = createEmptyStats()
+    recordStat(s, "loop", "text", "detect")
+    recordStat(s, "spiral", "reasoning", "nudge")
+    recordStat(s, "loop", "reasoning", "abort")
+    recordStat(s, "spiral", "text", "detect")
+    expect(s.counts.loop.text.detect).toBe(1)
+    expect(s.counts.spiral.reasoning.nudge).toBe(1)
+    expect(s.counts.loop.reasoning.abort).toBe(1)
+    expect(s.counts.spiral.text.detect).toBe(1)
+    expect(s.totals).toEqual({ detect: 2, nudge: 1, abort: 1 })
+  })
+
+  test("firstSeen stays at first record, lastSeen updates on subsequent records", () => {
+    const s = createEmptyStats()
+    recordStat(s, "loop", "text", "detect")
+    const first = s.firstSeen
+    // Sleep a tiny bit so lastSeen ISO differs (ms resolution)
+    const t = new Date(first!).getTime()
+    // Manually craft a second record after a small delay
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        recordStat(s, "loop", "text", "detect")
+        expect(s.firstSeen).toBe(first)
+        expect(s.lastSeen).not.toBe(first)
+        resolve()
+      }, 10)
+    })
+  })
+
+  test("format output includes Total line and per-cell rows", () => {
+    const s = createEmptyStats()
+    recordStat(s, "loop", "reasoning", "detect")
+    recordStat(s, "spiral", "text", "nudge")
+    const out = formatStats(s)
+    expect(out).toContain("Loop Detector Statistics")
+    expect(out).toContain("Total:")
+    expect(out).toContain("loop / reasoning")
+    expect(out).toContain("spiral / text")
+    expect(out).toContain("1 detect(s)")
+  })
+
+  test("loadStats returns empty stats when file does not exist", () => {
+    const path = `/tmp/loop-detector-test-missing-${Date.now()}.json`
+    const s = loadStats(path)
+    expect(s.totals).toEqual({ detect: 0, nudge: 0, abort: 0 })
+    expect(s.firstSeen).toBeNull()
+  })
+
+  test("saveStats then loadStats round-trips correctly", () => {
+    const path = `/tmp/loop-detector-test-roundtrip-${Date.now()}.json`
+    try {
+      const s = createEmptyStats()
+      recordStat(s, "loop", "text", "detect")
+      recordStat(s, "loop", "text", "nudge")
+      recordStat(s, "spiral", "reasoning", "abort")
+      saveStats(path, s)
+      const loaded = loadStats(path)
+      expect(loaded.totals).toEqual({ detect: 1, nudge: 1, abort: 1 })
+      expect(loaded.counts.loop.text).toEqual({ detect: 1, nudge: 1, abort: 0 })
+      expect(loaded.counts.spiral.reasoning.abort).toBe(1)
+      expect(loaded.firstSeen).toBe(s.firstSeen)
+      expect(loaded.lastSeen).toBe(s.lastSeen)
+    } finally {
+      try { unlinkSync(path) } catch { /* ignore */ }
+    }
+  })
+
+  test("loadStats returns empty on corrupt JSON", () => {
+    const path = `/tmp/loop-detector-test-corrupt-${Date.now()}.json`
+    try {
+      writeFileSync(path, "{ this is not valid json", "utf-8")
+      const s = loadStats(path)
+      expect(s.totals).toEqual({ detect: 0, nudge: 0, abort: 0 })
+      expect(s.firstSeen).toBeNull()
+    } finally {
+      try { unlinkSync(path) } catch { /* ignore */ }
+    }
+  })
+
+  test("loadStats recomputes totals from cells when stored totals drift", () => {
+    const path = `/tmp/loop-detector-test-drift-${Date.now()}.json`
+    try {
+      // Construct JSON with counts present but wrong totals
+      const bogus = {
+        counts: {
+          loop: {
+            reasoning: { detect: 2, nudge: 1, abort: 0 },
+            text: { detect: 0, nudge: 0, abort: 0 },
+          },
+          spiral: {
+            reasoning: { detect: 0, nudge: 0, abort: 0 },
+            text: { detect: 1, nudge: 0, abort: 1 },
+          },
+        },
+        totals: { detect: 999, nudge: 999, abort: 999 }, // intentionally wrong
+        firstSeen: "2024-01-01T00:00:00.000Z",
+        lastSeen: "2024-06-01T00:00:00.000Z",
+      }
+      writeFileSync(path, JSON.stringify(bogus), "utf-8")
+      const loaded = loadStats(path)
+      // totals must be recomputed: detect=3, nudge=1, abort=1
+      expect(loaded.totals).toEqual({ detect: 3, nudge: 1, abort: 1 })
+      expect(loaded.counts.loop.reasoning.detect).toBe(2)
+      expect(loaded.counts.spiral.text.abort).toBe(1)
+      expect(loaded.firstSeen).toBe("2024-01-01T00:00:00.000Z")
+    } finally {
+      try { unlinkSync(path) } catch { /* ignore */ }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Plugin stats integration tests
+// ---------------------------------------------------------------------------
+
+describe("plugin stats integration", () => {
+  test("loop → nudge records detect + nudge in stats file", async () => {
+    const tmpPath = `/tmp/loop-detector-plugin-${Date.now()}-1.json`
+    try { unlinkSync(tmpPath) } catch { /* ignore */ }
+    const { client } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // Trigger text loop → abort (decided), then idle → nudge executes
+    await hooks.event!({ event: makePartUpdatedEvent("ps1", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("ps1") as any })
+
+    const loaded = loadStats(tmpPath)
+    expect(loaded.counts.loop.text.detect).toBe(1)
+    expect(loaded.counts.loop.text.nudge).toBe(1)
+    expect(loaded.totals.detect).toBe(1)
+    expect(loaded.totals.nudge).toBe(1)
+    expect(loaded.totals.abort).toBe(0)
+  })
+
+  test("progressing to abort records abort count", async () => {
+    const tmpPath = `/tmp/loop-detector-plugin-${Date.now()}-2.json`
+    try { unlinkSync(tmpPath) } catch { /* ignore */ }
+    const { client } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // First loop → nudge
+    await hooks.event!({ event: makePartUpdatedEvent("ps2", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("ps2") as any })
+
+    // Second loop → abort (nudges exhausted)
+    await hooks.event!({ event: makePartUpdatedEvent("ps2", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("ps2") as any })
+
+    const loaded = loadStats(tmpPath)
+    expect(loaded.counts.loop.text.detect).toBe(2)
+    expect(loaded.counts.loop.text.nudge).toBe(1)
+    expect(loaded.counts.loop.text.abort).toBe(1)
+    expect(loaded.totals).toEqual({ detect: 2, nudge: 1, abort: 1 })
+  })
+
+  test("loop_detector_stats tool returns formatted stats", async () => {
+    const tmpPath = `/tmp/loop-detector-plugin-${Date.now()}-3.json`
+    try { unlinkSync(tmpPath) } catch { /* ignore */ }
+    const { client } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // Trigger one detect+nudge so stats is non-empty
+    await hooks.event!({ event: makePartUpdatedEvent("ps3", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("ps3") as any })
+
+    const result = await hooks.tool!.loop_detector_stats.execute({}, {} as any)
+    expect(result.title).toBe("Loop Detector Stats")
+    expect(result.output).toContain("Loop Detector Statistics")
+    expect(result.output).toContain("Total:")
+  })
+
+  test("loop_detector_stats tool with reset=true zeroes counters", async () => {
+    const tmpPath = `/tmp/loop-detector-plugin-${Date.now()}-4.json`
+    try { unlinkSync(tmpPath) } catch { /* ignore */ }
+    const { client } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // Trigger one detect+nudge
+    await hooks.event!({ event: makePartUpdatedEvent("ps4", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("ps4") as any })
+    expect(loadStats(tmpPath).totals.detect).toBe(1)
+
+    // Reset via tool
+    const result = await hooks.tool!.loop_detector_stats.execute({ reset: true }, {} as any)
+    expect(result.title).toBe("Loop Detector Stats (reset)")
+
+    // File on disk should now be zeroed
+    const loaded = loadStats(tmpPath)
+    expect(loaded.totals).toEqual({ detect: 0, nudge: 0, abort: 0 })
+    expect(loaded.firstSeen).toBeNull()
   })
 })

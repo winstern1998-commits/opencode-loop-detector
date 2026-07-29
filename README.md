@@ -68,6 +68,7 @@ The plugin should detect the repetition and nudge/abort the session. Check `~/.l
 | `spiral_min_sentence_len` | 15 | Spiral detector: ignore sentences shorter than this |
 | `spiral_min_sentences` | 20 | Spiral detector: minimum sentence count in window |
 | `reminder` | built-in | Nudge reminder text (supports `{period}` placeholder) |
+| `stats_path` | `~/.loop-detector/stats.json` | Path to the cumulative stats file; usually left at default |
 
 The defaults (min_repeats=4, max_nudges=2) are built into the source. To override them, reference the plugin in the `plugin` array with custom options:
 
@@ -101,6 +102,7 @@ If you must use it in these scenarios, raise `min_period` (50+), `min_repeats` (
 | `.opencode/loop.ts` | Loop detection algorithm (zero dependencies) |
 | `.opencode/spiral.ts` | Spiral detection algorithm (zero dependencies) |
 | `.opencode/opencode-loop-detector.ts` | Plugin entry point (event listeners + abort/nudge execution) |
+| `.opencode/stats.ts` | Cumulative stats module (detection/nudge/abort counters) |
 | `test.ts` | Unit tests |
 | `test-e2e.ts` | E2E test script (connects to opencode serve via SDK) |
 | `docs/plugin-design.md` | Design document with full nudge flow |
@@ -108,6 +110,12 @@ If you must use it in these scenarios, raise `min_period` (50+), `min_repeats` (
 ### Logging
 
 The plugin writes debug logs to `~/.loop-detector/detector.log`.
+
+### Statistics
+
+The plugin keeps cumulative counters of loop/spiral detections, nudges, and aborts, broken down by detection type (loop/spiral) × source (reasoning/text). Counters persist to `~/.loop-detector/stats.json` and survive opencode restarts.
+
+A `loop_detector_stats` tool is registered for the main agent to query cumulative stats. Ask something like "loop detector stats" in an opencode session and the agent can invoke the tool to return a human-readable summary. Pass `reset: true` to zero all counters before returning.
 
 ### Development
 
@@ -189,6 +197,7 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `spiral_min_sentence_len` | 15 | Spiral 检测器：忽略短于此长度的句子 |
 | `spiral_min_sentences` | 20 | Spiral 检测器：窗口内最少句子数 |
 | `reminder` | 内置 | nudge 提醒文本（支持 `{period}` 占位符） |
+| `stats_path` | `~/.loop-detector/stats.json` | 累计统计文件路径，一般保持默认 |
 
 默认值（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，在 `plugin` 数组中引用插件并传入自定义参数：
 
@@ -222,6 +231,7 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `.opencode/loop.ts` | Loop 检测算法（零依赖） |
 | `.opencode/spiral.ts` | Spiral 检测算法（零依赖） |
 | `.opencode/opencode-loop-detector.ts` | 插件入口（事件监听 + abort/nudge 执行） |
+| `.opencode/stats.ts` | 累计统计模块（检测/nudge/abort 计数器） |
 | `test.ts` | 单元测试 |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `docs/plugin-design.md` | 设计文档（含完整 nudge 流程） |
@@ -229,6 +239,12 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ### 日志
 
 插件将调试日志写入 `~/.loop-detector/detector.log`。
+
+### 统计
+
+插件累计统计 loop/spiral 检测、nudge、abort 次数，按检测类型（loop/spiral）× 来源（reasoning/text）细分。计数持久化到 `~/.loop-detector/stats.json`，跨 opencode 重启保留。
+
+插件注册了 `loop_detector_stats` tool，主 agent 可调用查询累计统计。在 opencode 会话中询问"loop detector stats"即可触发 agent 调用该 tool 返回人类可读的统计摘要。传入 `reset: true` 可在返回前将所有计数器清零。
 
 ### 开发
 

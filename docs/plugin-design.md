@@ -32,6 +32,7 @@
 | `spiral_dup_threshold` | 0.4 | spiral 检测器重复率阈值，超过此值触发 |
 | `spiral_min_sentence_len` | 15 | spiral 检测器忽略过短句子（归一化后长度） |
 | `spiral_min_sentences` | 20 | spiral 检测器窗口内最少句子数，不够则不判断 |
+| `stats_path` | `~/.loop-detector/stats.json` | 统计数据落盘路径，一般无需修改 |
 
 ### similarity 计算
 
@@ -72,8 +73,9 @@ recovery(nudgeCount, { max_nudges, period })
 1. handleDetected(sessionID, outcome)
    │
    ├── state.aborting = true                    ← 阻止后续 delta 喂入检测器
-   ├── recovery(0) → { action: "nudge", reminder: "<system-reminder>..." }
-   ├── state.pendingAction = { type: "nudge", ... }
+    ├── recovery(0) → { action: "nudge", reminder: "<system-reminder>..." }
+    ├── recordStat(stats, type, source, "detect")   ← 记录检测次数
+    ├── state.pendingAction = { type: "nudge", ... }
    │
    ├── abortSession(sessionID)
    │   └── client.session.abort({ path: { id: sessionID } })
@@ -107,7 +109,8 @@ recovery(nudgeCount, { max_nudges, period })
        │   })
        │   ← 服务器收到新消息 → 触发第二次流式回复
        │
-       ├── nudgeCount++                          ← 0 → 1
+        ├── nudgeCount++                          ← 0 → 1
+        ├── recordStat(stats, type, source, "nudge")    ← 记录 nudge 次数
         ├── reasoningDetector.reset()             ← 清空缓冲区，重新开始检测
         ├── textDetector.reset()
         ├── reasoningSpiralDetector.reset()
@@ -135,8 +138,9 @@ recovery(nudgeCount, { max_nudges, period })
         │     title: "Loop Detected" 或 "Spiral Detected"（按检测类型区分）
         │     message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%) after {attempts} attempt(s). Session aborted.",
        │     variant: "warning"
-       │   })
-       └── sessions.delete(sessionID)            ← 清理会话状态
+        │   })
+        ├── recordStat(stats, type, source, "abort")   ← 记录 abort 次数
+        └── sessions.delete(sessionID)            ← 清理会话状态
 ```
 
 ### 用户在 TUI 中观察到的现象
@@ -151,3 +155,53 @@ recovery(nudgeCount, { max_nudges, period })
 | 再次检测到循环 | 流式回复再次被中断 |
 | Abort toast | TUI 右下角出现警告通知：Loop 显示 "Loop Detected"，Spiral 显示 "Spiral Detected" |
 | 会话结束 | 不再生成 |
+
+## 统计计数
+
+插件累计统计检测/nudge/abort 次数，持久化到 `~/.loop-detector/stats.json`，跨 opencode 重启保留。
+
+### 计数维度
+
+按 detection type × source × action 三维细分，共 4 个 cell × 3 个 action：
+
+| detection type | source | detect / nudge / abort |
+|----------------|--------|------------------------|
+| loop | reasoning | loop/reasoning 的检测/nudge/abort 次数 |
+| loop | text | loop/text 的检测/nudge/abort 次数 |
+| spiral | reasoning | spiral/reasoning 的检测/nudge/abort 次数 |
+| spiral | text | spiral/text 的检测/nudge/abort 次数 |
+
+另维护 `totals`（按 action 汇总，不分 type/source）、`firstSeen` / `lastSeen`（首次/末次计数时间）。
+
+### 计数触发点
+
+| action | 触发位置 | 说明 |
+|--------|---------|------|
+| `detect` | `handleDetected` 中检测器触发时 | 每次 loop/spiral 检测器（reasoning 或 text）触发时 +1 |
+| `nudge` | `executePendingAction` 的 nudge 分支 | nudge 成功执行时 +1 |
+| `abort` | `executePendingAction` 的 abort 分支 | 最终 abort 时 +1 |
+
+### 持久化文件
+
+计数落盘到 `~/.loop-detector/stats.json`，可用配置参数 `stats_path` 覆盖（一般无需修改，主要用于测试隔离）。
+
+### `loop_detector_stats` tool
+
+插件注册了 opencode tool `loop_detector_stats`，主 agent 可调用查询累计统计：
+
+- 参数：`reset?: boolean`（可选，默认 `false`；设 `true` 则重置所有计数器为零后返回）
+- 返回：人类可读的统计文本
+
+### stats.json 结构示例
+
+```json
+{
+  "counts": {
+    "loop": { "reasoning": { "detect": 2, "nudge": 1, "abort": 1 }, "text": { "detect": 0, "nudge": 0, "abort": 0 } },
+    "spiral": { "reasoning": { "detect": 1, "nudge": 1, "abort": 0 }, "text": { "detect": 0, "nudge": 0, "abort": 0 } }
+  },
+  "totals": { "detect": 3, "nudge": 2, "abort": 1 },
+  "firstSeen": "2026-07-29T10:00:00.000Z",
+  "lastSeen": "2026-07-29T12:00:00.000Z"
+}
+```
