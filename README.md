@@ -49,6 +49,16 @@ After installation, enter an opencode session and try these prompts to verify lo
 
 The plugin should detect the repetition and nudge/abort the session. Check `~/.loop-detector/detector.log` for detection details.
 
+### Logging
+
+The plugin writes debug logs to `~/.loop-detector/detector.log`.
+
+### Statistics
+
+The plugin keeps cumulative counters of loop/spiral detections, nudges, and aborts, broken down by detection type (loop/spiral) × source (reasoning/text). Counters persist to `~/.loop-detector/stats.json` and survive opencode restarts.
+
+A `loop_detector_stats` tool is registered for the main agent to query cumulative stats. Ask something like "loop detector stats" in an opencode session and the agent can invoke the tool to return a human-readable summary. Pass `reset: true` to zero all counters before returning.
+
 ### Configuration
 
 | Parameter | Default | Description |
@@ -106,16 +116,6 @@ If you must use it in these scenarios, raise `min_period` (50+), `min_repeats` (
 | `test.ts` | Unit tests |
 | `test-e2e.ts` | E2E test script (connects to opencode serve via SDK) |
 | `docs/plugin-design.md` | Design document with full nudge flow |
-
-### Logging
-
-The plugin writes debug logs to `~/.loop-detector/detector.log`.
-
-### Statistics
-
-The plugin keeps cumulative counters of loop/spiral detections, nudges, and aborts, broken down by detection type (loop/spiral) × source (reasoning/text). Counters persist to `~/.loop-detector/stats.json` and survive opencode restarts.
-
-A `loop_detector_stats` tool is registered for the main agent to query cumulative stats. Ask something like "loop detector stats" in an opencode session and the agent can invoke the tool to return a human-readable summary. Pass `reset: true` to zero all counters before returning.
 
 ### Development
 
@@ -178,6 +178,16 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 
 插件应检测到重复并 nudge/中止 session。查看 `~/.loop-detector/detector.log` 了解检测详情。
 
+### 日志
+
+插件将调试日志写入 `~/.loop-detector/detector.log`。
+
+### 统计
+
+插件累计统计 loop/spiral 检测、nudge、abort 次数，按检测类型（loop/spiral）× 来源（reasoning/text）细分。计数持久化到 `~/.loop-detector/stats.json`，跨 opencode 重启保留。
+
+插件注册了 `loop_detector_stats` tool，主 agent 可调用查询累计统计。在 opencode 会话中询问"loop detector stats"即可触发 agent 调用该 tool 返回人类可读的统计摘要。传入 `reset: true` 可在返回前将所有计数器清零。
+
 ### 配置
 
 | 参数 | 默认值 | 说明 |
@@ -235,16 +245,6 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `test.ts` | 单元测试 |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
 | `docs/plugin-design.md` | 设计文档（含完整 nudge 流程） |
-
-### 日志
-
-插件将调试日志写入 `~/.loop-detector/detector.log`。
-
-### 统计
-
-插件累计统计 loop/spiral 检测、nudge、abort 次数，按检测类型（loop/spiral）× 来源（reasoning/text）细分。计数持久化到 `~/.loop-detector/stats.json`，跨 opencode 重启保留。
-
-插件注册了 `loop_detector_stats` tool，主 agent 可调用查询累计统计。在 opencode 会话中询问"loop detector stats"即可触发 agent 调用该 tool 返回人类可读的统计摘要。传入 `reset: true` 可在返回前将所有计数器清零。
 
 ### 开发
 
