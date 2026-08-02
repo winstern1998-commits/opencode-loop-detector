@@ -6,7 +6,7 @@
 
 **Loop 检测器**（精确字符循环）：在缓冲区中从大到小尝试所有可能的重复周期（period），对末尾 `min_repeats` 个 period 长度的文本块做归一化（空白折叠）后比较：全部相同则判定为循环。要求重复 ≥ `min_repeats` 次而非 2 次，可避免路径、标识符等天然重复 2 次的结构被误判为循环。
 
-**Spiral 检测器**（推理螺旋）：在滑动窗口内按句子分割文本，统计重复句子占比。当重复率超过 `spiral_dup_threshold`（默认 0.4）时触发。用于捕获 loop 检测器无法检测的"语义螺旋"——模型在推理中反复规划同样的行动但从不执行，每次措辞略有不同，不构成精确字符重复，但句子级重复率高达 40-50%。
+**Spiral 检测器**（推理螺旋）：在滑动窗口内按句子分割文本，统计重复句子占比。当重复率超过 `spiral_dup_threshold`（默认 0.5）时触发。用于捕获 loop 检测器无法检测的"语义螺旋"——模型在推理中反复规划同样的行动但从不执行，每次措辞略有不同，不构成精确字符重复，但句子级重复率高达 50% 以上。
 
 两类检测器并行运行，任一触发即进入 nudge/abort 流程。
 
@@ -29,7 +29,7 @@
 | `spiral_min_chars` | 2000 | spiral 检测器启动门槛，累计字符数达到此值后才开始检测 |
 | `spiral_check_interval` | 100 | spiral 检测器检查间隔（字符数） |
 | `spiral_window_size` | 8000 | spiral 检测器滑动窗口大小（字符数） |
-| `spiral_dup_threshold` | 0.4 | spiral 检测器重复率阈值，超过此值触发 |
+| `spiral_dup_threshold` | 0.5 | spiral 检测器重复率阈值，超过此值触发 |
 | `spiral_min_sentence_len` | 15 | spiral 检测器忽略过短句子（归一化后长度） |
 | `spiral_min_sentences` | 20 | spiral 检测器窗口内最少句子数，不够则不判断 |
 | `stats_path` | `~/.loop-detector/stats.json` | 统计数据落盘路径，一般无需修改 |

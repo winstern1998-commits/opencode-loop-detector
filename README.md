@@ -74,7 +74,7 @@ A `loop_detector_stats` tool is registered for the main agent to query cumulativ
 | `spiral_min_chars` | 2000 | Spiral detector: minimum accumulated characters before detection starts |
 | `spiral_check_interval` | 100 | Spiral detector: characters between detection checks |
 | `spiral_window_size` | 8000 | Spiral detector: sliding window size |
-| `spiral_dup_threshold` | 0.4 | Spiral detector: duplicate sentence ratio threshold |
+| `spiral_dup_threshold` | 0.5 | Spiral detector: duplicate sentence ratio threshold |
 | `spiral_min_sentence_len` | 15 | Spiral detector: ignore sentences shorter than this |
 | `spiral_min_sentences` | 20 | Spiral detector: minimum sentence count in window |
 | `reminder` | built-in | Nudge reminder text (supports `{period}` placeholder) |
@@ -203,7 +203,7 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `spiral_min_chars` | 2000 | Spiral 检测器：开始检测前需累积的最小字符数 |
 | `spiral_check_interval` | 100 | Spiral 检测器：两次检测之间的字符间隔 |
 | `spiral_window_size` | 8000 | Spiral 检测器：滑动窗口大小 |
-| `spiral_dup_threshold` | 0.4 | Spiral 检测器：重复句子率阈值 |
+| `spiral_dup_threshold` | 0.5 | Spiral 检测器：重复句子率阈值 |
 | `spiral_min_sentence_len` | 15 | Spiral 检测器：忽略短于此长度的句子 |
 | `spiral_min_sentences` | 20 | Spiral 检测器：窗口内最少句子数 |
 | `reminder` | 内置 | nudge 提醒文本（支持 `{period}` 占位符） |

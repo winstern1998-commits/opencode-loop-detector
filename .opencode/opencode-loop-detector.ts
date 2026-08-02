@@ -140,6 +140,18 @@ const LoopDetector: Plugin = async (input, options) => {
 
   const sessions = new Map<string, SessionState>()
 
+  const sessionInfo = new Map<string, { title?: string; model?: string; agent?: string }>()
+
+  function sessLabel(sessionID: string): string {
+    const info = sessionInfo.get(sessionID)
+    if (!info) return sessionID
+    const parts: string[] = []
+    if (info.title) parts.push(`title="${info.title}"`)
+    if (info.model) parts.push(`model=${info.model}`)
+    if (info.agent) parts.push(`agent=${info.agent}`)
+    return parts.length ? `${sessionID} ${parts.join(" ")}` : sessionID
+  }
+
   // LRU guard — prevent unbounded growth in abnormal cases
   const MAX_SESSIONS = 100
 
@@ -179,22 +191,22 @@ const LoopDetector: Plugin = async (input, options) => {
       reasoningDetector: create({
         source: "reasoning",
         ...detectorOpts,
-        on_detected: (o) => log(`[${sessionID}] reasoning loop detected: period=${o.period}`),
+        on_detected: (o) => log(`[${sessLabel(sessionID)}] reasoning loop detected: period=${o.period}`),
       }),
       textDetector: create({
         source: "text",
         ...detectorOpts,
-        on_detected: (o) => log(`[${sessionID}] text loop detected: period=${o.period}`),
+        on_detected: (o) => log(`[${sessLabel(sessionID)}] text loop detected: period=${o.period}`),
       }),
       reasoningSpiralDetector: createSpiral({
         source: "reasoning",
         ...spiralOpts,
-        on_detected: (o) => log(`[${sessionID}] reasoning spiral detected: ratio=${o.ratio.toFixed(2)}`),
+        on_detected: (o) => log(`[${sessLabel(sessionID)}] reasoning spiral detected: ratio=${o.ratio.toFixed(2)}`),
       }),
       textSpiralDetector: createSpiral({
         source: "text",
         ...spiralOpts,
-        on_detected: (o) => log(`[${sessionID}] text spiral detected: ratio=${o.ratio.toFixed(2)}`),
+        on_detected: (o) => log(`[${sessLabel(sessionID)}] text spiral detected: ratio=${o.ratio.toFixed(2)}`),
       }),
       nudgeCount: 0,
       pendingAction: null,
@@ -213,20 +225,20 @@ const LoopDetector: Plugin = async (input, options) => {
   async function abortSession(sessionID: string): Promise<void> {
     try {
       await client.session.abort({ path: { id: sessionID } })
-      log(`[${sessionID}] abort succeeded via SDK`)
+      log(`[${sessLabel(sessionID)}] abort succeeded via SDK`)
     } catch (err) {
-      log(`[${sessionID}] SDK abort failed: ${String(err)}, trying HTTP fallback`)
+      log(`[${sessLabel(sessionID)}] SDK abort failed: ${String(err)}, trying HTTP fallback`)
       try {
         const resp = await fetch(`${serverUrl.origin}/session/${sessionID}/abort`, {
           method: "POST",
         })
         if (!resp.ok) {
-          log(`[${sessionID}] HTTP abort returned ${resp.status}`)
+          log(`[${sessLabel(sessionID)}] HTTP abort returned ${resp.status}`)
         } else {
-          log(`[${sessionID}] abort succeeded via HTTP fallback`)
+          log(`[${sessLabel(sessionID)}] abort succeeded via HTTP fallback`)
         }
       } catch (err2) {
-        log(`[${sessionID}] HTTP abort also failed: ${String(err2)}`)
+        log(`[${sessLabel(sessionID)}] HTTP abort also failed: ${String(err2)}`)
       }
     }
   }
@@ -261,7 +273,7 @@ const LoopDetector: Plugin = async (input, options) => {
         ? SPIRAL_REMINDER.replace("{ratio}", String(Math.round((outcome as SpiralOutcome).ratio * 100)))
         : decision.reminder
       log(
-        `[${sessionID}] nudge decided (attempt=${state.nudgeCount}, ` +
+        `[${sessLabel(sessionID)}] nudge decided (attempt=${state.nudgeCount}, ` +
           `${isSpiral ? `ratio=${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `period=${period}`})`,
       )
       state.pendingAction = {
@@ -274,7 +286,7 @@ const LoopDetector: Plugin = async (input, options) => {
       }
     } else {
       log(
-        `[${sessionID}] abort decided (attempts=${decision.attempts}, ` +
+        `[${sessLabel(sessionID)}] abort decided (attempts=${decision.attempts}, ` +
           `${isSpiral ? `ratio=${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `period=${period}`})`,
       )
       state.pendingAction = {
@@ -294,7 +306,7 @@ const LoopDetector: Plugin = async (input, options) => {
     state.idleTimeout = setTimeout(() => {
       const s = sessions.get(sessionID)
       if (!s || !s.pendingAction) return
-      log(`[${sessionID}] idle timeout fired, executing pending action`)
+      log(`[${sessLabel(sessionID)}] idle timeout fired, executing pending action`)
       void executePendingAction(sessionID, s)
     }, IDLE_TIMEOUT_MS)
   }
@@ -334,7 +346,7 @@ const LoopDetector: Plugin = async (input, options) => {
           },
         })
       } catch (err) {
-        log(`[${sessionID}] showToast (nudge) failed: ${String(err)}`)
+        log(`[${sessLabel(sessionID)}] showToast (nudge) failed: ${String(err)}`)
       }
       try {
         await client.session.promptAsync({
@@ -343,9 +355,9 @@ const LoopDetector: Plugin = async (input, options) => {
             parts: [{ type: "text", text: action.reminder, synthetic: true }],
           },
         })
-        log(`[${sessionID}] nudge sent (nudgeCount=${state.nudgeCount + 1})`)
+        log(`[${sessLabel(sessionID)}] nudge sent (nudgeCount=${state.nudgeCount + 1})`)
       } catch (err) {
-        log(`[${sessionID}] promptAsync failed: ${String(err)}`)
+        log(`[${sessLabel(sessionID)}] promptAsync failed: ${String(err)}`)
       }
       state.nudgeCount++
       recordStat(stats, action.detectionType as DetectionType, action.source as Source, "nudge")
@@ -371,9 +383,9 @@ const LoopDetector: Plugin = async (input, options) => {
           },
         })
       } catch (err) {
-        log(`[${sessionID}] showToast failed: ${String(err)}`)
+        log(`[${sessLabel(sessionID)}] showToast failed: ${String(err)}`)
       }
-      log(`[${sessionID}] final abort, cleaning up session state`)
+      log(`[${sessLabel(sessionID)}] final abort, cleaning up session state`)
       recordStat(stats, action.detectionType as DetectionType, action.source as Source, "abort")
       saveStats(statsPath, stats)
       sessions.delete(sessionID)
@@ -458,6 +470,27 @@ const LoopDetector: Plugin = async (input, options) => {
         return
       }
 
+      // -- session.updated -------------------------------------------------
+      // Cache session metadata (title, model, agent) for log enrichment.
+      if (event.type === "session.updated") {
+        const props = event.properties as {
+          sessionID: string
+          info?: {
+            title?: string
+            model?: { id: string; providerID: string; variant?: string }
+            agent?: string
+          }
+        }
+        if (props.sessionID && props.info) {
+          sessionInfo.set(props.sessionID, {
+            title: props.info.title,
+            model: props.info.model ? `${props.info.model.providerID}/${props.info.model.id}` : undefined,
+            agent: props.info.agent,
+          })
+        }
+        return
+      }
+
       // -- session.idle ----------------------------------------------------
       if (event.type === "session.idle") {
         const sessionID = event.properties.sessionID
@@ -465,7 +498,7 @@ const LoopDetector: Plugin = async (input, options) => {
         if (!state) return
 
         if (state.pendingAction) {
-          log(`[${sessionID}] session.idle received, executing pending action`)
+          log(`[${sessLabel(sessionID)}] session.idle received, executing pending action`)
           await executePendingAction(sessionID, state)
         } else {
           // Normal completion — reset detectors and counters
@@ -507,6 +540,7 @@ const LoopDetector: Plugin = async (input, options) => {
         if (state.idleTimeout) clearTimeout(state.idleTimeout)
       }
       sessions.clear()
+      sessionInfo.clear()
       log("Plugin disposed")
     },
   }

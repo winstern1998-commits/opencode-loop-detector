@@ -24,7 +24,7 @@ export const SPIRAL_DEFAULTS = {
   min_chars: 2000, // startup threshold: total chars before detection begins
   check_interval: 100, // check every this many new chars
   window_size: 8000, // sliding window: only look at the most recent this many chars
-  dup_threshold: 0.4, // duplicate ratio above this triggers
+  dup_threshold: 0.5, // duplicate ratio above this triggers
   min_sentence_len: 15, // ignore sentences shorter than this (after normalize)
   min_sentences: 20, // minimum sentence count in window (statistical noise guard)
 } as const
