@@ -75,6 +75,7 @@ interface SessionState {
 
 const LOG_DIR = join(homedir(), ".loop-detector")
 const LOG_FILE = join(LOG_DIR, "detector.log")
+const TRIGGER_DIR = join(LOG_DIR, "triggers")
 const DEFAULT_STATS_PATH = join(LOG_DIR, "stats.json")
 
 function log(message: string): void {
@@ -259,6 +260,42 @@ const LoopDetector: Plugin = async (input, options) => {
     const src: Source = outcome.source
     recordStat(stats, detType, src, "detect")
     saveStats(statsPath, stats)
+
+    // Save trigger content snapshot to file
+    try {
+      const isSpiral = outcome.type === "spiral"
+      const detType = isSpiral ? "spiral" : "loop"
+      const detector =
+        isSpiral
+          ? (outcome.source === "reasoning" ? state.reasoningSpiralDetector : state.textSpiralDetector)
+          : (outcome.source === "reasoning" ? state.reasoningDetector : state.textDetector)
+      const content = detector.snapshot()
+
+      const info = sessionInfo.get(sessionID)
+      const ts = new Date().toISOString().replace(/[:.]/g, "-")
+      const shortId = sessionID.replace(/^ses_/, "").slice(0, 12)
+      const filename = `${ts}_${shortId}_${detType}_${outcome.source}.txt`
+      mkdirSync(TRIGGER_DIR, { recursive: true })
+      const header = [
+        `=== Loop Detector Trigger ===`,
+        `Time: ${new Date().toISOString()}`,
+        `Session: ${sessionID}`,
+        info?.title ? `Title: ${info.title}` : null,
+        info?.model ? `Model: ${info.model}` : null,
+        info?.agent ? `Agent: ${info.agent}` : null,
+        `Type: ${detType}`,
+        `Source: ${outcome.source}`,
+        isSpiral ? `Ratio: ${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `Period: ${(outcome as LoopOutcome).period}`,
+        `Content length: ${content.length} chars`,
+        ``,
+        `--- Trigger Content ---`,
+        ``,
+      ].filter((x) => x !== null).join("\n")
+      appendFileSync(join(TRIGGER_DIR, filename), header + content + "\n")
+      log(`[${sessLabel(sessionID)}] trigger snapshot saved to ${filename}`)
+    } catch (err) {
+      log(`[${sessLabel(sessionID)}] trigger snapshot save failed: ${String(err)}`)
+    }
 
     const decision = recovery(state.nudgeCount, {
       max_nudges: config.max_nudges,
@@ -474,17 +511,30 @@ const LoopDetector: Plugin = async (input, options) => {
       // Cache session metadata (title, model, agent) for log enrichment.
       if (event.type === "session.updated") {
         const props = event.properties as {
-          sessionID: string
+          sessionID?: string
           info?: {
+            id?: string
             title?: string
             model?: { id: string; providerID: string; variant?: string }
             agent?: string
           }
         }
-        if (props.sessionID && props.info) {
-          sessionInfo.set(props.sessionID, {
+        // Use info.id as the authoritative session ID (top-level sessionID may be
+        // absent or unreliable in some opencode event delivery paths).
+        const sid = props.info?.id ?? props.sessionID
+        if (sid && props.info) {
+          const prev = sessionInfo.get(sid)
+          const newModel = props.info.model
+            ? `${props.info.model.providerID}/${props.info.model.id}`
+            : undefined
+          // Debug: log when model changes for an existing session (helps diagnose
+          // cross-session contamination)
+          if (prev?.model && prev.model !== newModel) {
+            log(`[${sessLabel(sid)}] session model changed: ${prev.model} -> ${newModel}`)
+          }
+          sessionInfo.set(sid, {
             title: props.info.title,
-            model: props.info.model ? `${props.info.model.providerID}/${props.info.model.id}` : undefined,
+            model: newModel,
             agent: props.info.agent,
           })
         }

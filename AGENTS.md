@@ -44,7 +44,9 @@ opencode 1.17.x 的流式 delta 通过 `message.part.delta` 事件传递（不�
 
 ## 日志
 
-插件运行日志写入 `~/.loop-detector/detector.log`，可用于调试和验证。
+插件运行日志写入 `~/.loop-detector/detector.log`，可用于调试和验证。检测/触发日志附带 session 的 title、model、agent。
+
+每次检测触发时，触发时的文本内容保存到 `~/.loop-detector/triggers/` 目录下的 `.txt` 文件（文件名含时间戳、session ID、检测类型、来源）。
 
 累计计数（检测/nudge/abort 次数）持久化到 `~/.loop-detector/stats.json`，跨重启保留。注册了 `loop_detector_stats` tool 供主 agent 查询（支持 `reset` 参数清零）。
 

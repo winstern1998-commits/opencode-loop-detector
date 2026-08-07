@@ -68,6 +68,7 @@ export function create(options: {
 }): {
   feed(delta: string): SpiralOutcome | undefined
   reset(): void
+  snapshot(): string
 } {
   const minChars = options.min_chars ?? SPIRAL_DEFAULTS.min_chars
   const interval = options.check_interval ?? SPIRAL_DEFAULTS.check_interval
@@ -123,6 +124,7 @@ export function create(options: {
       total = 0
       last = 0
     },
+    snapshot(): string { return buffer },
   }
 }
 

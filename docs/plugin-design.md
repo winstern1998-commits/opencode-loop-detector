@@ -160,6 +160,8 @@ recovery(nudgeCount, { max_nudges, period })
 
 插件累计统计检测/nudge/abort 次数，持久化到 `~/.loop-detector/stats.json`，跨 opencode 重启保留。
 
+检测/触发日志写入 `~/.loop-detector/detector.log`，附带 session 的 title、model、agent。每次检测触发时，触发时的文本内容保存到 `~/.loop-detector/triggers/` 目录下的 `.txt` 文件（文件名含时间戳、session ID、检测类型、来源），文件头部含 session 元信息，后接原始缓冲区内容。
+
 ### 计数维度
 
 按 detection type × source × action 三维细分，共 4 个 cell × 3 个 action：

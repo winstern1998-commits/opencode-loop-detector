@@ -70,6 +70,7 @@ export function create(options: {
 }): {
   feed(delta: string): LoopOutcome | undefined
   reset(): void
+  snapshot(): string
 } {
   const minPeriod = options.min_period ?? DEFAULTS.min_period
   const maxPeriod = options.max_period ?? DEFAULTS.max_period
@@ -139,6 +140,7 @@ export function create(options: {
       total = 0
       last = 0
     },
+    snapshot(): string { return buffer },
   }
 }
 
