@@ -24,6 +24,8 @@ The loop detection algorithm requires ≥ `min_repeats` (default 4) repetitions 
 
 ### Detection Mechanism
 
+![Detection Mechanism](docs/detection-mechanism-infographic.png)
+
 #### Loop Detector (exact character repetition)
 
 Detects when the model's output gets stuck repeating the same text block character-for-character.
@@ -230,6 +232,8 @@ MIT
 Loop 检测算法要求尾部出现 ≥ `min_repeats`（默认 4）次重复才触发，而非仅 2 次，从而避免对路径、标识符等自然重复结构的误报。
 
 ### 检测机制
+
+![检测机制](docs/detection-mechanism-infographic.png)
 
 #### Loop 检测器（精确字符循环）
 
