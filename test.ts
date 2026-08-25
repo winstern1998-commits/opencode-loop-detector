@@ -615,11 +615,15 @@ function makeIdleEvent(sessionID: string) {
 // --- Timing tests ---------------------------------------------------------
 
 describe("plugin timing simulation", () => {
+  // Isolated stats file per test — prevents writes to the real
+  // ~/.loop-detector/stats.json (recordStat/saveStats in handleDetected).
+  const tmpStatsPath = (tag: string) => `/tmp/loop-detector-timing-${tag}-${Date.now()}.json`
+
   test("detects reasoning loop → abort → nudge on idle", async () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1 },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("detect-nudge") },
     )
 
     // Feed repeating reasoning delta → should trigger loop detection
@@ -644,7 +648,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1 },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("second-loop") },
     )
 
     // First loop → nudge
@@ -667,7 +671,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1 },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("normal-completion") },
     )
 
     // Feed non-repeating text
@@ -686,7 +690,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3 },
+      { min_chars: 10, check_interval: 1, min_period: 3, stats_path: tmpStatsPath("ignores-non-text") },
     )
 
     // Feed a tool part delta — should be ignored
@@ -707,7 +711,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3 },
+      { min_chars: 10, check_interval: 1, min_period: 3, stats_path: tmpStatsPath("ignores-no-delta") },
     )
 
     // Part update without delta (metadata-only update)
@@ -727,7 +731,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1 },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("reentry-guard") },
     )
 
     // First delta triggers loop → abort
@@ -744,7 +748,7 @@ describe("plugin timing simulation", () => {
     const customReminder = "<system-reminder>\n你正在重复输出（周期约 {period} 字符）。请停止重复。\n</system-reminder>"
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, reminder: customReminder },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, reminder: customReminder, stats_path: tmpStatsPath("custom-reminder") },
     )
 
     await hooks.event!({ event: makePartUpdatedEvent("s7", "text", repeat("0123456789", 60)) as any })
@@ -759,7 +763,7 @@ describe("plugin timing simulation", () => {
     const { client, calls } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 2 },
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 2, stats_path: tmpStatsPath("max-nudges-2") },
     )
 
     // First loop → nudge 1
@@ -783,7 +787,7 @@ describe("plugin timing simulation", () => {
     const { client } = createMockClient()
     const hooks = await LoopDetector(
       { client, serverUrl: new URL("http://localhost:0") } as any,
-      { min_chars: 10, check_interval: 1, min_period: 3 },
+      { min_chars: 10, check_interval: 1, min_period: 3, stats_path: tmpStatsPath("dispose") },
     )
 
     // Create some state

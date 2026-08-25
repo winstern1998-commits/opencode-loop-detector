@@ -220,26 +220,31 @@ const LoopDetector: Plugin = async (input, options) => {
   }
 
   // -------------------------------------------------------------------------
-  // Abort helper (SDK → HTTP fallback)
+  // Interrupt/abort helper (SDK → HTTP fallback)
+  //
+  // Called with purpose="interrupt" to pause generation after a detection
+  // (used by both nudge and abort paths), and with purpose="abort" only
+  // when the plugin intends to terminate the session.
   // -------------------------------------------------------------------------
 
-  async function abortSession(sessionID: string): Promise<void> {
+  async function abortSession(sessionID: string, purpose: "interrupt" | "abort" = "interrupt"): Promise<void> {
+    const verb = purpose === "abort" ? "abort" : "interrupt generation"
     try {
       await client.session.abort({ path: { id: sessionID } })
-      log(`[${sessLabel(sessionID)}] abort succeeded via SDK`)
+      log(`[${sessLabel(sessionID)}] ${verb} succeeded via SDK`)
     } catch (err) {
-      log(`[${sessLabel(sessionID)}] SDK abort failed: ${String(err)}, trying HTTP fallback`)
+      log(`[${sessLabel(sessionID)}] SDK ${verb} failed: ${String(err)}, trying HTTP fallback`)
       try {
         const resp = await fetch(`${serverUrl.origin}/session/${sessionID}/abort`, {
           method: "POST",
         })
         if (!resp.ok) {
-          log(`[${sessLabel(sessionID)}] HTTP abort returned ${resp.status}`)
+          log(`[${sessLabel(sessionID)}] HTTP ${verb} returned ${resp.status}`)
         } else {
-          log(`[${sessLabel(sessionID)}] abort succeeded via HTTP fallback`)
+          log(`[${sessLabel(sessionID)}] ${verb} succeeded via HTTP fallback`)
         }
       } catch (err2) {
-        log(`[${sessLabel(sessionID)}] HTTP abort also failed: ${String(err2)}`)
+        log(`[${sessLabel(sessionID)}] HTTP ${verb} also failed: ${String(err2)}`)
       }
     }
   }
@@ -336,7 +341,10 @@ const LoopDetector: Plugin = async (input, options) => {
       }
     }
 
-    await abortSession(sessionID)
+    // Interrupt current generation so the pending action can take over.
+    // With a nudge decision this is only an interrupt (no session abort);
+    // only an abort decision counts as a plugin-initiated abort.
+    await abortSession(sessionID, decision.action === "abort" ? "abort" : "interrupt")
 
     // Timeout fallback: if session.idle doesn't arrive within IDLE_TIMEOUT_MS,
     // execute the pending action directly.

@@ -77,9 +77,9 @@ recovery(nudgeCount, { max_nudges, period })
     ├── recordStat(stats, type, source, "detect")   ← 记录检测次数
     ├── state.pendingAction = { type: "nudge", ... }
    │
-   ├── abortSession(sessionID)
+   ├── abortSession(sessionID, "interrupt")
    │   └── client.session.abort({ path: { id: sessionID } })
-   │       ← 中断当前流式回复，服务器发送 session.idle 事件
+   │       ← 中断当前流式回复（非 abort，仅 interrupt），服务器发送 session.idle 事件
    │
    └── 启动 5 秒超时计时器 (idleTimeout)
        ← 如果 session.idle 未到达，超时后强制执行 pendingAction
@@ -127,7 +127,7 @@ recovery(nudgeCount, { max_nudges, period })
    ├── recovery(1) → { action: "abort", period, attempts: 2 }
    │   ← nudgeCount(1) >= max_nudges(1)，决定 abort
    ├── state.pendingAction = { type: "abort", ... }
-   └── abortSession(sessionID)
+   └── abortSession(sessionID, "abort")
 
 2. session.idle 事件到达
    │
