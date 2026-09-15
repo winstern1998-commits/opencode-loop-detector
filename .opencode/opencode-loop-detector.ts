@@ -61,10 +61,30 @@ interface SessionState {
   textSpiralDetector: ReturnType<typeof createSpiral>
   nudgeCount: number
   pendingAction:
-    | { type: "nudge"; reminder: string; period: number; source: string; detectionType: "loop" | "spiral"; ratio?: number }
+    | {
+        type: "nudge"
+        reminder: string
+        period: number
+        source: string
+        detectionType: "loop" | "spiral"
+        ratio?: number
+        // Snapshot taken at detection time — the nudge's own promptAsync would
+        // otherwise trigger createUserMessage→setAgentModel and rewrite the
+        // session's agent record with the default agent.
+        agent?: string
+        modelRef?: { providerID: string; modelID: string }
+        variant?: string
+      }
     | { type: "abort"; period: number; attempts: number; source: string; detectionType: "loop" | "spiral"; ratio?: number }
     | null
   aborting: boolean
+  // In-flight session.abort() promise; executePendingAction waits for it so the
+  // nudge is not killed by the abort cascade (session.idle can arrive first).
+  abortPromise: Promise<void> | null
+  // Set when the abort wait timed out while the old abort promise was still in
+  // flight: its eventual idle lands in the normal-reset branch and must not
+  // wipe nudgeCount.
+  pendingStaleIdle: boolean
   idleTimeout: ReturnType<typeof setTimeout> | null
   partTypes: Map<string, "reasoning" | "text">
 }
@@ -93,10 +113,27 @@ function log(message: string): void {
 // ---------------------------------------------------------------------------
 
 const IDLE_TIMEOUT_MS = 5000
+// Abort finalization measured ~2.2s; 5s is too tight for long streams / slow
+// models. Worst-case nudge delay = IDLE_TIMEOUT_MS (5s) + ABORT_WAIT_MS (10s).
+const ABORT_WAIT_MS = 10000
+// Upper bound for the agent-recovery session.get lookup (skip path on timeout).
+const SESSION_GET_TIMEOUT_MS = 5000
+// Upper bound for the nudge promptAsync send. A hung send is treated as
+// "dispatched, unconfirmed" and still counts toward the nudge budget (see
+// executePendingAction) so it cannot cause an endless nudge storm.
+const PROMPT_SEND_TIMEOUT_MS = 5000
+
+/**
+ * The server stores the literal variant "default" when no variant is set.
+ * Normalize it to undefined so we never pass the literal through.
+ */
+function normalizeVariant(variant: string | undefined): string | undefined {
+  return variant === "default" ? undefined : variant
+}
 
 const SPIRAL_REMINDER =
-  "<system-reminder>\nYour reasoning is stuck in a repetitive spiral (duplicate sentence ratio ~{ratio}%). " +
-  "You are repeating the same plans without executing them. Stop planning and take a concrete action now.\n</system-reminder>"
+  "[Loop Detector] Repetitive reasoning detected (duplicate sentence ratio ~{ratio}%). " +
+  "You are repeating the same plans without executing them. Stop planning and take a concrete action now."
 
 // ---------------------------------------------------------------------------
 // Plugin
@@ -141,7 +178,16 @@ const LoopDetector: Plugin = async (input, options) => {
 
   const sessions = new Map<string, SessionState>()
 
-  const sessionInfo = new Map<string, { title?: string; model?: string; agent?: string }>()
+  const sessionInfo = new Map<
+    string,
+    {
+      title?: string
+      model?: string
+      agent?: string
+      modelRef?: { providerID: string; modelID: string }
+      variant?: string
+    }
+  >()
 
   function sessLabel(sessionID: string): string {
     const info = sessionInfo.get(sessionID)
@@ -212,6 +258,8 @@ const LoopDetector: Plugin = async (input, options) => {
       nudgeCount: 0,
       pendingAction: null,
       aborting: false,
+      abortPromise: null,
+      pendingStaleIdle: false,
       idleTimeout: null,
       partTypes: new Map(),
     }
@@ -318,6 +366,13 @@ const LoopDetector: Plugin = async (input, options) => {
         `[${sessLabel(sessionID)}] nudge decided (attempt=${state.nudgeCount}, ` +
           `${isSpiral ? `ratio=${(outcome as SpiralOutcome).ratio.toFixed(2)}` : `period=${period}`})`,
       )
+      // Snapshot agent/model/variant before sending: a promptAsync without an
+      // explicit agent makes createUserMessage fall back to the default agent
+      // and permanently rewrite the session's agent record via setAgentModel.
+      const info = sessionInfo.get(sessionID)
+      if (!info?.agent) {
+        log(`[${sessLabel(sessionID)}] nudge: no agent snapshot; will resolve via session.get or skip`)
+      }
       state.pendingAction = {
         type: "nudge",
         reminder,
@@ -325,6 +380,9 @@ const LoopDetector: Plugin = async (input, options) => {
         source: outcome.source,
         detectionType: isSpiral ? "spiral" : "loop",
         ratio: isSpiral ? (outcome as SpiralOutcome).ratio : undefined,
+        agent: info?.agent,
+        modelRef: info?.modelRef,
+        variant: info?.variant,
       }
     } else {
       log(
@@ -344,7 +402,11 @@ const LoopDetector: Plugin = async (input, options) => {
     // Interrupt current generation so the pending action can take over.
     // With a nudge decision this is only an interrupt (no session abort);
     // only an abort decision counts as a plugin-initiated abort.
-    await abortSession(sessionID, decision.action === "abort" ? "abort" : "interrupt")
+    // Keep the promise on state: session.idle can arrive before the server-side
+    // abort has settled, and executePendingAction must wait for it. Do NOT await
+    // it here — the idle timeout must be armed unconditionally, otherwise a hung
+    // abort call would leave the session muted forever.
+    state.abortPromise = abortSession(sessionID, decision.action === "abort" ? "abort" : "interrupt")
 
     // Timeout fallback: if session.idle doesn't arrive within IDLE_TIMEOUT_MS,
     // execute the pending action directly.
@@ -374,44 +436,197 @@ const LoopDetector: Plugin = async (input, options) => {
       state.idleTimeout = null
     }
 
+    // session.idle can arrive before the server-side abort has fully settled;
+    // starting a new generation in that window gets killed by the abort cascade
+    // (0-token assistant message, MessageAbortedError). Wait for the in-flight
+    // abort — bounded by ABORT_WAIT_MS — before executing the action.
+    let abortWaitTimedOut = false
+    const pendingAbort = state.abortPromise
+    state.abortPromise = null
+    if (pendingAbort) {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      abortWaitTimedOut = await Promise.race([
+        // Swallow rejection: abortSession catches internally, but never let an
+        // unhandled rejection escape into the fire-and-forget event hook.
+        pendingAbort.then(() => false, () => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), ABORT_WAIT_MS)
+        }),
+      ])
+      if (timer) clearTimeout(timer)
+      if (abortWaitTimedOut) {
+        log(`[${sessLabel(sessionID)}] abort wait timed out after ${ABORT_WAIT_MS}ms, executing pending action`)
+        // We proceed without the abort having settled. When it eventually does,
+        // the server may publish a delayed idle that lands in the
+        // normal-completion branch (pendingAction is already null, aborting will
+        // be false) and would wipe nudgeCount. Flag it so that idle is consumed
+        // without resetting. Premise: the timeout means the abort HTTP call is
+        // still in flight — if it never settles there will be no stale idle.
+        pendingAbort.then(
+          () => {
+            state.pendingStaleIdle = true
+          },
+          () => {},
+        )
+      }
+    }
+
     if (action.type === "nudge") {
-      // Show toast so the user can see the nudge in the TUI
-      // (synthetic messages are hidden from the chat view)
       const isSpiral = action.detectionType === "spiral"
       const title = isSpiral ? "Spiral Detected — Nudge" : "Loop Detected — Nudge"
       const detail = isSpiral
         ? ` (duplicate sentence ratio ~${Math.round((action.ratio ?? 0) * 100)}%)`
         : ` (period ~${action.period} chars)`
-      try {
-        await client.tui.showToast({
-          body: {
-            title,
-            message: `Repetitive ${action.source} output detected${detail}. Sending reminder to redirect.`,
-            variant: "warning",
-          },
-        })
-      } catch (err) {
-        log(`[${sessLabel(sessionID)}] showToast (nudge) failed: ${String(err)}`)
+
+      // Resolve the agent/model for the nudge. A promptAsync without an explicit
+      // agent makes createUserMessage fall back to the default agent and
+      // permanently rewrite the session's agent record via setAgentModel — the
+      // exact bug the snapshot exists to prevent. If the snapshot is missing,
+      // look the session up; if that fails too, skip the nudge instead of
+      // silently rewriting the session agent.
+      let agent = action.agent
+      let modelRef = action.modelRef
+      let variant = action.variant
+      let skipReason: string | null = null
+      if (!agent) {
+        try {
+          // Bound the lookup: a hanging session.get must not stall the nudge
+          // forever. On timeout the race rejects and lands in the skip path.
+          let timer: ReturnType<typeof setTimeout> | null = null
+          const res = await Promise.race([
+            client.session.get({ path: { id: sessionID } }),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`session.get timed out after ${SESSION_GET_TIMEOUT_MS}ms`)),
+                SESSION_GET_TIMEOUT_MS,
+              )
+            }),
+          ]).finally(() => {
+            if (timer) clearTimeout(timer)
+          })
+          // The pinned SDK types lag behind the server's Session shape
+          // (agent/model are returned at runtime), hence the cast.
+          const info = res.data as unknown as
+            | { agent?: string; model?: { id: string; providerID: string; variant?: string } }
+            | undefined
+          if (info?.agent) {
+            agent = info.agent
+            if (!modelRef && info.model) {
+              modelRef = { providerID: info.model.providerID, modelID: info.model.id }
+            }
+            const recoveredVariant = normalizeVariant(info.model?.variant)
+            if (!variant && recoveredVariant) variant = recoveredVariant
+            log(`[${sessLabel(sessionID)}] nudge: recovered agent=${agent} from session.get`)
+          } else {
+            skipReason = "session record has no agent"
+          }
+        } catch (err) {
+          skipReason = `session.get failed: ${String(err)}`
+        }
       }
-      try {
-        await client.session.promptAsync({
-          path: { id: sessionID },
-          body: {
-            parts: [{ type: "text", text: action.reminder, synthetic: true }],
-          },
-        })
-        log(`[${sessLabel(sessionID)}] nudge sent (nudgeCount=${state.nudgeCount + 1})`)
-      } catch (err) {
-        log(`[${sessLabel(sessionID)}] promptAsync failed: ${String(err)}`)
+
+      let sent = false
+      let sendTimedOut = false
+      if (skipReason) {
+        log(`[${sessLabel(sessionID)}] nudge skipped (${skipReason}); refusing to send without an agent`)
+      } else {
+        try {
+          // The message is intentionally not synthetic, so both the model and
+          // the user see it. metadata.source marks it as plugin-injected for
+          // other consumers (E2E detection, user-activity checks).
+          // `variant` is not in the pinned SDK types yet, hence the typed local.
+          const body: {
+            parts: Array<{ type: "text"; text: string; metadata: { [key: string]: unknown } }>
+            agent?: string
+            model?: { providerID: string; modelID: string }
+            variant?: string
+          } = {
+            parts: [{ type: "text", text: action.reminder, metadata: { source: "loop-detector" } }],
+          }
+          // skipReason guarantees an agent is available on this branch
+          body.agent = agent!
+          if (modelRef) body.model = modelRef
+          if (variant) body.variant = variant
+          // Bound the send: a hung promptAsync must not keep aborting=true and
+          // block state migration. A race timeout is treated as "dispatched,
+          // unconfirmed" and still counts toward the nudge budget (same
+          // trade-off as the abort-wait timeout: no endless nudge storm).
+          const guardedSend = client.session.promptAsync({ path: { id: sessionID }, body }).then(
+            () => {},
+            (err) => {
+              throw err
+            },
+          )
+          // Swallow a late rejection if the timeout branch wins the race
+          guardedSend.catch(() => {})
+          let sendTimer: ReturnType<typeof setTimeout> | null = null
+          try {
+            await Promise.race([
+              guardedSend,
+              new Promise<void>((resolve) => {
+                sendTimer = setTimeout(() => {
+                  sendTimedOut = true
+                  resolve()
+                }, PROMPT_SEND_TIMEOUT_MS)
+              }),
+            ])
+          } finally {
+            if (sendTimer) clearTimeout(sendTimer)
+          }
+          sent = true
+        } catch (err) {
+          // Send failed: do not consume the nudge budget.
+          log(`[${sessLabel(sessionID)}] promptAsync failed: ${String(err)}`)
+        }
       }
-      state.nudgeCount++
-      recordStat(stats, action.detectionType as DetectionType, action.source as Source, "nudge")
-      saveStats(statsPath, stats)
+
+      if (sent) {
+        // Count resolved and timed-out sends (the message was dispatched and may
+        // be in the session history); a rejection does not consume the budget.
+        state.nudgeCount++
+        recordStat(stats, action.detectionType as DetectionType, action.source as Source, "nudge")
+        saveStats(statsPath, stats)
+        log(
+          `[${sessLabel(sessionID)}] nudge sent (nudgeCount=${state.nudgeCount}, agent=${agent}` +
+            `${abortWaitTimedOut ? ", abort wait timed out" : ""}` +
+            `${sendTimedOut ? ", promptAsync timed out (counted)" : ""})`,
+        )
+      }
+
+      // State machine ready before any (not awaited) UI work: a hanging toast
+      // must not keep the session muted.
       state.reasoningDetector.reset()
       state.textDetector.reset()
       state.reasoningSpiralDetector.reset()
       state.textSpiralDetector.reset()
       state.aborting = false
+
+      if (skipReason) {
+        void client.tui
+          .showToast({
+            body: {
+              title: isSpiral ? "Spiral Detected — Nudge Skipped" : "Loop Detected — Nudge Skipped",
+              message: `Repetitive ${action.source} output detected${detail}. Reminder skipped: session agent unknown; sending it would rewrite the session agent.`,
+              variant: "error",
+            },
+          })
+          .catch((err) => log(`[${sessLabel(sessionID)}] showToast (nudge skipped) failed: ${String(err)}`))
+      } else if (sent) {
+        // Toast only after the send, so its wording reflects the actual outcome.
+        // On the timeout branch the session may still be aborting and the
+        // reminder can be discarded — say so instead of claiming success.
+        void client.tui
+          .showToast({
+            body: {
+              title,
+              message: abortWaitTimedOut
+                ? `Repetitive ${action.source} output detected${detail}. Reminder sent while the session is still aborting; it may not take effect.`
+                : `Repetitive ${action.source} output detected${detail}. Reminder sent to redirect.`,
+              variant: abortWaitTimedOut ? "error" : "warning",
+            },
+          })
+          .catch((err) => log(`[${sessLabel(sessionID)}] showToast (nudge) failed: ${String(err)}`))
+      }
     } else {
       // abort path — final termination
       const isSpiral = action.detectionType === "spiral"
@@ -419,21 +634,21 @@ const LoopDetector: Plugin = async (input, options) => {
       const detail = isSpiral
         ? ` (duplicate sentence ratio ~${Math.round((action.ratio ?? 0) * 100)}%)`
         : ` (period ~${action.period} chars)`
-      try {
-        await client.tui.showToast({
+      log(`[${sessLabel(sessionID)}] final abort, cleaning up session state`)
+      recordStat(stats, action.detectionType as DetectionType, action.source as Source, "abort")
+      saveStats(statsPath, stats)
+      // Cleanup before the (not awaited) toast: a hanging toast must not keep
+      // the terminated session state alive.
+      sessions.delete(sessionID)
+      void client.tui
+        .showToast({
           body: {
             title,
             message: `Repetitive ${action.source} output detected${detail} after ${action.attempts} attempt(s). Session aborted.`,
             variant: "warning",
           },
         })
-      } catch (err) {
-        log(`[${sessLabel(sessionID)}] showToast failed: ${String(err)}`)
-      }
-      log(`[${sessLabel(sessionID)}] final abort, cleaning up session state`)
-      recordStat(stats, action.detectionType as DetectionType, action.source as Source, "abort")
-      saveStats(statsPath, stats)
-      sessions.delete(sessionID)
+        .catch((err) => log(`[${sessLabel(sessionID)}] showToast (abort) failed: ${String(err)}`))
     }
   }
 
@@ -532,9 +747,10 @@ const LoopDetector: Plugin = async (input, options) => {
         const sid = props.info?.id ?? props.sessionID
         if (sid && props.info) {
           const prev = sessionInfo.get(sid)
-          const newModel = props.info.model
-            ? `${props.info.model.providerID}/${props.info.model.id}`
+          const modelRef = props.info.model
+            ? { providerID: props.info.model.providerID, modelID: props.info.model.id }
             : undefined
+          const newModel = modelRef ? `${modelRef.providerID}/${modelRef.modelID}` : undefined
           // Debug: log when model changes for an existing session (helps diagnose
           // cross-session contamination)
           if (prev?.model && prev.model !== newModel) {
@@ -544,6 +760,8 @@ const LoopDetector: Plugin = async (input, options) => {
             title: props.info.title,
             model: newModel,
             agent: props.info.agent,
+            modelRef,
+            variant: normalizeVariant(props.info.model?.variant),
           })
         }
         return
@@ -558,14 +776,28 @@ const LoopDetector: Plugin = async (input, options) => {
         if (state.pendingAction) {
           log(`[${sessLabel(sessionID)}] session.idle received, executing pending action`)
           await executePendingAction(sessionID, state)
+        } else if (!state.aborting) {
+          if (state.pendingStaleIdle) {
+            // A timed-out abort can settle after we already proceeded; the
+            // server's delayed idle lands here and must not wipe nudgeCount.
+            // Consume the flag and skip this reset (the next normal idle resets).
+            state.pendingStaleIdle = false
+            log(`[${sessLabel(sessionID)}] stale session.idle ignored after abort wait timeout`)
+          } else {
+            // Normal completion — reset detectors and counters
+            state.reasoningDetector.reset()
+            state.textDetector.reset()
+            state.reasoningSpiralDetector.reset()
+            state.textSpiralDetector.reset()
+            state.nudgeCount = 0
+            state.aborting = false
+          }
         } else {
-          // Normal completion — reset detectors and counters
-          state.reasoningDetector.reset()
-          state.textDetector.reset()
-          state.reasoningSpiralDetector.reset()
-          state.textSpiralDetector.reset()
-          state.nudgeCount = 0
-          state.aborting = false
+          // Stale idle: a second idle can land while executePendingAction is
+          // waiting for the abort (pendingAction already cleared, aborting still
+          // true — e.g. runner cancel racing natural completion). Resetting here
+          // would wipe nudgeCount and break the nudge → abort escalation.
+          log(`[${sessLabel(sessionID)}] stale session.idle ignored while action in flight`)
         }
         return
       }

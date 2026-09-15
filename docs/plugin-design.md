@@ -12,8 +12,8 @@
 
 检测到循环后的处理策略由 `max_nudges` 控制：
 
-- **nudge**（nudgeCount < max_nudges）：中断当前生成 → 发送 synthetic 提醒消息 → 模型重新生成
-- **abort**（nudgeCount ≥ max_nudges）：中断当前生成 → 显示 toast 通知 → 清理会话
+- **nudge**（nudgeCount < max_nudges）：中断当前生成 → 等待 abort 落地 → 发送可见的提醒消息（TUI 可见，以原 agent/model 继续）→ 模型重新生成；session agent 无法确定时跳过发送（仅中断 + error toast，不消耗 nudge 额度）
+- **abort**（nudgeCount ≥ max_nudges）：中断当前生成 → 等待 abort 落地 → 显示 toast 通知 → 清理会话
 
 ### 配置参数
 
@@ -39,15 +39,34 @@
 - `similarity: 1.0`（当前配置）：两个归一化后的文本块必须**完全相同**
 - `similarity < 1.0`：逐字符位置比较，`matches / max_length` 达标即可
 
-## `synthetic: true` 的含义
+## Nudge 消息的可见性
 
-`TextPart` 和 `TextPartInput` 类型上有一个可选字段 `synthetic?: boolean`。当设置为 `true` 时：
+`TextPartInput` 有一个可选字段 `synthetic?: boolean`：设为 `true` 时消息仍然作为对话上下文发送给模型，但不会渲染在 TUI 聊天界面中（适合注入用户无需看到的系统级指令）。
 
-- **TUI 行为**：该消息不会渲染在聊天界面中（对用户不可见）
-- **模型行为**：该消息仍然作为对话上下文发送给模型，模型能看到并据此生成回复
-- **用途**：插件注入系统级指令时，避免在用户聊天历史中产生干扰条目
+插件**不使用** `synthetic`：nudge 消息是一条普通 user 消息，模型和用户都能看到，提醒文本以 `[Loop Detector]` 前缀标识来源，text part 带 `metadata: { source: "loop-detector" }` 机器可读标记（E2E 检测、其它插件的用户活动识别均可据此区分插件注入与真实用户消息）。`tui.showToast` 在消息发送成功后弹出，文案反映实际结果：正常路径为 warning 级 "Reminder sent to redirect."；abort 等待超时路径为 error 级 "Reminder sent while the session is still aborting; it may not take effect."。
 
-插件在 nudge 时使用 `synthetic: true` 发送 `<system-reminder>` 包裹的提醒，模型能收到提醒但用户在 TUI 中看不到。为此，插件额外调用 `tui.showToast` 在 TUI 中显示一条临时通知，让用户知道 nudge 已发送。
+插件在发送提醒前会等待 `session.abort` 的 HTTP 调用完全返回（`state.abortPromise`，上限 `ABORT_WAIT_MS = 10000ms`）。`session.idle` 事件可能先于 abort 落地到达，若此时立刻发送新消息，新生成会被同一波 abort 级联杀死（新 assistant 消息 0 tokens、MessageAbortedError）。等待超时后仍 best-effort 发送（消息可见是核心价值），由 error 级 toast 说明提醒可能失效；该次发送**计入** nudge 额度（见下方计数语义）。
+
+executePendingAction 执行期间到达的重复/滞后 `session.idle`（`pendingAction` 已被同步清空、`aborting` 仍为 true，例如 runner cancel 与自然结束竞争双发 idle）会被**忽略**，不会重置 `nudgeCount` 与 `aborting`。否则升级计数被清零，会反复 nudge 而永不 abort。
+
+abort 等待**超时**后 best-effort 继续时，旧 abort 仍可能在途：当它最终落地，服务端可能补发一个滞后 idle（此时 `pendingAction` 已清空、`aborting` 也已复位，会落入"正常完成"分支）。插件在超时分支给旧 abort promise 挂上标记 → `state.pendingStaleIdle = true`；该 idle 到达时消费标记、跳过本次 reset（下一次正常 idle 再 reset），避免抹掉 `nudgeCount`。
+
+`handleDetected` **不等待** abort promise：把 promise 存入 `state.abortPromise` 后立即 arm 5 秒 idle 兜底计时器。否则 abort 调用挂起且 `session.idle` 不到达时，`handleDetected` 会一直阻塞在 await 上、兜底计时器永不 arm，session 将永久处于 `aborting` 静音状态。等待 abort 由 `executePendingAction` 负责（带超时上限），`handleDetected` 无需再等。
+
+同时，`promptAsync` 必须显式传入 `agent`（以及可用的 `model` / `variant`）：不传 `agent` 时 opencode 的 `createUserMessage` 会回退到默认 agent 并通过 `setAgentModel` 永久改写 session 的 agent 记录，使 nudge 触发的新生成以错误 agent 身份运行（opencode 自己的 task tool 继续 subagent 时也会显式传 `agent: "<subagent 名>"`）。`variant` 会做归一：服务端未设置 variant 时以字面量 `"default"` 落库，快照（session.updated）与恢复（session.get）两处都将其归一为 `undefined`，不透传字面量。快照缺失时的兜底与拒绝策略：
+
+1. `executePendingAction` 发送前发现无快照 `agent` → 调用 `client.session.get({ path: { id } })` 查询 session 记录（**带 5 秒超时**，超时按查询失败处理），查到则用查到的 `agent`（及 `model` / `variant`）补全 body 后发送
+2. 查询失败或记录中也没有 `agent` → **放弃本次 nudge**：不发送、不递增 `nudgeCount`、不计入统计；重置检测器并清除 `aborting`，写日志说明跳过原因，同时弹 error 级 toast（标题 "Loop Detected — Nudge Skipped" / "Spiral Detected — Nudge Skipped"）
+
+计数语义（防无限累积与防风暴）：
+
+- `promptAsync` 成功返回（含 abort 等待超时后的 best-effort 发送）→ 递增 `nudgeCount` 与统计。超时发送的消息确实进入了会话历史（模型下一轮有机会读到），若不计入，反复超时会导致"每次检测都发可见 nudge 却永不升级到 abort"；代价是消息真被 abort 吞掉时，升级到 abort 会提前一次
+- `promptAsync` 带 5 秒上限（`PROMPT_SEND_TIMEOUT_MS`）：race 超时按"已发起、未确认"处理，同样**计入** `nudgeCount` 与统计（日志标注 `promptAsync timed out (counted)`），避免挂起的发送让 session 永久静音、且不计数造成无限累积；超时后原 promise 的迟到 rejection 被吞掉（不产生 unhandled rejection）
+- `promptAsync` 抛异常（发送失败）或 agent 无法确定（跳过）→ **不消耗** nudge 额度，各自写日志/toast
+
+状态迁移顺序：nudge 成功/超时/跳过后，4 个检测器 reset 与 `aborting = false` 先于 toast 执行；abort（终止）分支同样先 `sessions.delete` 再弹 toast。所有 toast 都是 fire-and-forget（`void ... .catch(...)`），挂起的 toast 不会阻塞状态机、不会让 session 保持静音。
+
+`ABORT_WAIT_MS = 10000`（abort 落地实测 ~2.2s，5s 余量偏小）。最坏情况下 nudge 延迟 = `IDLE_TIMEOUT_MS`（5s）+ `ABORT_WAIT_MS`（10s），可接受。
 
 ## Nudge 完整流程
 
@@ -65,7 +84,7 @@ recovery(nudgeCount, { max_nudges, period })
   → nudgeCount < max_nudges ? "nudge" : "abort"
 ```
 
-当前配置 `max_nudges: 1`：第一次检测 → nudge，第二次检测 → abort。
+默认配置 `max_nudges: 2`：前两次检测 → nudge，第三次检测 → abort。
 
 ### Nudge 路径（第一次检测）
 
@@ -73,49 +92,67 @@ recovery(nudgeCount, { max_nudges, period })
 1. handleDetected(sessionID, outcome)
    │
    ├── state.aborting = true                    ← 阻止后续 delta 喂入检测器
-    ├── recovery(0) → { action: "nudge", reminder: "<system-reminder>..." }
+    ├── recovery(0) → { action: "nudge", reminder: "[Loop Detector] ..." }
     ├── recordStat(stats, type, source, "detect")   ← 记录检测次数
-    ├── state.pendingAction = { type: "nudge", ... }
+    ├── 快照 agent / modelRef / variant            ← promptAsync 不显式传 agent 会触发 createUserMessage→setAgentModel 改写 session 记录
+    ├── state.pendingAction = { type: "nudge", reminder, agent, modelRef, variant, ... }
    │
-   ├── abortSession(sessionID, "interrupt")
+   ├── abortSession(sessionID, "interrupt")      ← 不 await，promise 存入 state.abortPromise
    │   └── client.session.abort({ path: { id: sessionID } })
    │       ← 中断当前流式回复（非 abort，仅 interrupt），服务器发送 session.idle 事件
    │
-   └── 启动 5 秒超时计时器 (idleTimeout)
+   └── 立即 arm 5 秒超时计时器 (idleTimeout)      ← 即使 abort 调用挂起也必须 arm，否则 session 被永久静音
        ← 如果 session.idle 未到达，超时后强制执行 pendingAction
 
 2. session.idle 事件到达（或超时触发）
+   │
+   ├── pendingAction 为空且 aborting=true（execute 等待 abort 期间的滞后 idle）→ 忽略，不重置 nudgeCount
+   ├── pendingAction 为空、aborting=false 但 pendingStaleIdle=true（abort 等待超时后补发的滞后 idle）→ 消费标记、跳过 reset
    │
    └── executePendingAction(sessionID, state)
        │
        ├── state.pendingAction = null            ← 立即清空，防止并发 session.idle 导致重复执行
        ├── 清除 idleTimeout
        │
-        ├── client.tui.showToast({                ← 在 TUI 中显示通知（用户可见）
-        │     title: "Loop Detected — Nudge" 或 "Spiral Detected — Nudge"（按检测类型区分）
-        │     message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%). Sending reminder to redirect.",
-       │     variant: "warning"
-       │   })
+       ├── await state.abortPromise              ← 等 abort HTTP 调用完全落地（上限 ABORT_WAIT_MS = 10000ms）
+       │   ← session.idle 可能先于 abort 落地到达；立即发消息会被 abort 级联杀死（0 token 消息）
+       │   ← 等待超时则写日志并继续 best-effort 发送；该次发送计入 nudge 额度（防无限累积）
+       │   ← 超时时给旧 abort promise 挂 pendingStaleIdle 标记，消费其迟到 idle
        │
-       ├── client.session.promptAsync({          ← 发送 nudge 消息（synthetic，TUI 不渲染）
+       ├── 若无快照 agent：client.session.get({ path: { id } }) 查询 session 记录（5s 超时按失败处理）
+       │   ├── 查到 agent → 用查到的 agent（及 model / variant）补全 body 后继续
+       │   └── 查不到 / 查询失败 / 超时 → 跳过本次 nudge：不发送、不计数、error toast
+       │
+       ├── client.session.promptAsync({          ← 发送 nudge 消息（普通 user 消息，TUI 可见；5s 上限）
        │     path: { id: sessionID },
        │     body: {
+       │       agent: "<快照或查询到的 agent，如 ascend-op>",   ← 必须显式传，否则回退默认 agent 并改写 session 记录
+       │       model: { providerID, modelID },          ← 快照/查询存在时传
+       │       variant: "<快照/查询的 variant>",          ← 快照/查询存在时传（"default" 归一为不传）
        │       parts: [{
        │         type: "text",
-       │         text: "<system-reminder>\nYour output is repeating in a loop with period ~{period} characters. Stop repeating and take a different, concrete action.\n</system-reminder>",
-       │         synthetic: true
+       │         text: "[Loop Detector] Your output is repeating in a loop with period ~{period} characters. Stop repeating and take a different, concrete action.",
+       │         metadata: { source: "loop-detector" }  ← 机器可读标记，供 E2E / 其它插件识别插件注入消息
        │       }]
        │     }
        │   })
        │   ← 服务器收到新消息 → 触发第二次流式回复
+       │   ← 超时（已发起未确认）同样计入额度，日志标注 promptAsync timed out (counted)
        │
-        ├── nudgeCount++                          ← 0 → 1
-        ├── recordStat(stats, type, source, "nudge")    ← 记录 nudge 次数
-        ├── reasoningDetector.reset()             ← 清空缓冲区，重新开始检测
+        ├── nudgeCount++                          ← promptAsync 返回或超时（已发起未确认）时 +1；reject / 跳过不计
+        ├── recordStat(stats, type, source, "nudge")    ← 记录 nudge 次数（同上）
+        ├── reasoningDetector.reset()             ← 状态机先复位（在 toast 之前）
         ├── textDetector.reset()
         ├── reasoningSpiralDetector.reset()
         ├── textSpiralDetector.reset()
-        └── state.aborting = false                ← 允许后续 delta 喂入检测器
+        ├── state.aborting = false                ← 允许后续 delta 喂入检测器
+        │
+        └── client.tui.showToast(...).catch(...)  ← fire-and-forget，不阻塞状态机；文案反映实际结果
+            title: 正常/超时为 "Loop Detected — Nudge" 或 "Spiral Detected — Nudge"；
+                   跳过时为 "Loop Detected — Nudge Skipped" 或 "Spiral Detected — Nudge Skipped"
+            message: 正常路径 "... Reminder sent to redirect."（warning）
+                     超时路径 "... Reminder sent while the session is still aborting; it may not take effect."（error）
+                     跳过路径 "... Reminder skipped: session agent unknown; sending it would rewrite the session agent."（error）
 ```
 
 ### Abort 路径（nudge 后再次检测到循环）
@@ -124,23 +161,23 @@ recovery(nudgeCount, { max_nudges, period })
 1. handleDetected(sessionID, outcome)
    │
    ├── state.aborting = true
-   ├── recovery(1) → { action: "abort", period, attempts: 2 }
-   │   ← nudgeCount(1) >= max_nudges(1)，决定 abort
+   ├── recovery(2) → { action: "abort", period, attempts: 3 }
+   │   ← nudgeCount(2) >= max_nudges(2)，决定 abort
    ├── state.pendingAction = { type: "abort", ... }
-   └── abortSession(sessionID, "abort")
+   └── abortSession(sessionID, "abort")          ← promise 同样存入 state.abortPromise，idleTimeout 立即 arm
 
 2. session.idle 事件到达
    │
    └── executePendingAction(sessionID, state)
        │
        ├── state.pendingAction = null
-        ├── client.tui.showToast({                ← 最终 abort 通知
-        │     title: "Loop Detected" 或 "Spiral Detected"（按检测类型区分）
-        │     message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%) after {attempts} attempt(s). Session aborted.",
-       │     variant: "warning"
-        │   })
-        ├── recordStat(stats, type, source, "abort")   ← 记录 abort 次数
-        └── sessions.delete(sessionID)            ← 清理会话状态
+       ├── await state.abortPromise              ← 等 abort 完全落地（上限 10s）
+       ├── recordStat(stats, type, source, "abort")   ← 记录 abort 次数
+       ├── sessions.delete(sessionID)            ← 先清理会话状态（在 toast 之前）
+       └── client.tui.showToast(...).catch(...)  ← fire-and-forget 最终 abort 通知
+           title: "Loop Detected" 或 "Spiral Detected"（按检测类型区分）
+           message: "Repetitive {source} output detected (period ~{period} chars / duplicate sentence ratio ~{ratio}%) after {attempts} attempt(s). Session aborted."
+           variant: "warning"
 ```
 
 ### 用户在 TUI 中观察到的现象
@@ -149,9 +186,9 @@ recovery(nudgeCount, { max_nudges, period })
 |------|---------|
 | 模型开始生成 | 流式回复正常显示 |
 | 循环检测到 | 流式回复被中断（interrupted） |
-| Nudge toast | TUI 右下角出现警告通知：Loop 显示 "Loop Detected — Nudge"，Spiral 显示 "Spiral Detected — Nudge" |
-| Nudge 消息 | 不可见（synthetic，TUI 不渲染） |
-| 第二次流式回复 | 模型重新生成，流式回复正常显示 |
+| Nudge toast | 提醒消息发送成功后，TUI 右下角出现通知：正常路径为 warning（"Loop Detected — Nudge" / "Spiral Detected — Nudge"，含 "Reminder sent to redirect."）；abort 等待超时路径为 error（含 "may not take effect"）；快照与查询都拿不到 agent 时为 error（标题含 "Nudge Skipped"，含 "session agent unknown"） |
+| Nudge 消息 | 一条带 `[Loop Detector]` 前缀的普通 user 消息（TUI 可见，text part 带 `metadata.source = "loop-detector"`）；agent 无法确定时**不发送**，仅显示上述 error toast |
+| 第二次流式回复 | 模型以原 agent/model 重新生成，流式回复正常显示 |
 | 再次检测到循环 | 流式回复再次被中断 |
 | Abort toast | TUI 右下角出现警告通知：Loop 显示 "Loop Detected"，Spiral 显示 "Spiral Detected" |
 | 会话结束 | 不再生成 |
@@ -180,7 +217,7 @@ recovery(nudgeCount, { max_nudges, period })
 | action | 触发位置 | 说明 |
 |--------|---------|------|
 | `detect` | `handleDetected` 中检测器触发时 | 每次 loop/spiral 检测器（reasoning 或 text）触发时 +1 |
-| `nudge` | `executePendingAction` 的 nudge 分支 | nudge 成功执行时 +1 |
+| `nudge` | `executePendingAction` 的 nudge 分支 | `promptAsync` 返回或 5s 超时（已发起未确认）时 +1；`promptAsync` reject、agent 无法确定而跳过均不计入 |
 | `abort` | `executePendingAction` 的 abort 分支 | 最终 abort 时 +1 |
 
 ### 持久化文件

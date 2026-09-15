@@ -30,9 +30,9 @@ GLM-5.2 模型对中文"重复内容"类提示词的遵从度较低——模型�
 | `.opencode/spiral.ts` | 推理螺旋检测算法（句子级重复率），零依赖 |
 | `.opencode/opencode-loop-detector.ts` | 插件入口，事件监听 + abort/nudge 执行 + stats tool |
 | `.opencode/stats.ts` | 累计计数模块（检测/nudge/abort，按类型×来源细分），零依赖 |
-| `test.ts` | 单元测试（69 个） |
+| `test.ts` | 单元测试（82 个） |
 | `test-e2e.ts` | E2E 测试脚本（通过 SDK 连接 opencode serve） |
-| `.opencode/opencode.json` | 插件配置 + 模型设定 |
+| `.opencode/opencode.jsonc` | 插件配置 + 模型设定 |
 | `docs/plugin-design.md` | 功能描述、配置参数、nudge 完整流程 |
 
 ## opencode 事件系统
@@ -41,6 +41,19 @@ opencode 1.17.x 的流式 delta 通过 `message.part.delta` 事件传递（不�
 
 1. 监听 `message.part.updated` → 记录 `partID → type`（reasoning / text）映射
 2. 监听 `message.part.delta` → 用 `partID` 查 type，喂入对应检测器
+
+## Nudge 流程要点
+
+- nudge 消息不使用 `synthetic`，是 TUI 可见的普通 user 消息，文本以 `[Loop Detector]` 前缀标识来源；text part 带 `metadata: { source: "loop-detector" }` 机器可读标记；toast 在发送处理后调用（正常 warning，abort 等待超时 / 无 agent 跳过为 error），且为 fire-and-forget
+- agent 兜底：快照缺失时先 `client.session.get` 查询 session 记录补全 agent/model/variant（查询带 5s 超时）；查询失败/超时或记录无 agent 时**放弃本次 nudge**（不发送、不递增 nudgeCount、不计入统计，error toast + 日志），绝不允许裸发导致 session agent 被改写
+- `variant` 为字面量 `"default"` 时归一为不传（session.updated 快照与 session.get 恢复两处，`normalizeVariant`）
+- `nudgeCount` / nudge 统计在 `promptAsync` 返回或 5s 超时（`PROMPT_SEND_TIMEOUT_MS`，按"已发起未确认"）时递增（含 abort 等待超时的 best-effort 发送，防止反复超时导致永不升级到 abort）；`promptAsync` 抛异常与 agent 跳过不消耗额度
+- `handleDetected` 不 await abort（否则 abort 挂起时 idle 兜底计时器永不 arm、session 永久静音），promise 存入 `state.abortPromise` 后立即 arm `idleTimeout`
+- `session.idle` 可能先于 `session.abort` 落地到达，executePendingAction 必须等待 `state.abortPromise`（上限 `ABORT_WAIT_MS = 10000ms`）后再发消息，否则新生成会被 abort 级联杀死；等待超时仍 best-effort 发送（计入额度）。最坏 nudge 延迟 = 5s + 10s
+- executePendingAction 等待期间到达的滞后 `session.idle`（`pendingAction` 已清空、`aborting` 仍为 true）必须忽略，不得重置 `nudgeCount` / `aborting`，否则升级计数被破坏、永不 abort
+- abort 等待超时后给旧 abort promise 挂 `pendingStaleIdle` 标记；其最终落地补发的 idle（落入"正常完成"分支）消费标记并跳过 reset，防止超时窗口抹掉 nudgeCount
+- 状态迁移先于 toast：4 个检测器 reset + `aborting = false`（nudge 分支）、`sessions.delete`（abort 分支）都在 toast 之前执行，toast 不 await
+- `promptAsync` 显式传检测时快照的 `agent` / `model` / `variant`，避免 opencode 回退默认 agent 并永久改写 session 的 agent 记录
 
 ## 日志
 

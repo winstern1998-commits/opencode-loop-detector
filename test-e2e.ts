@@ -49,7 +49,7 @@ interface TestResult {
   idleEvents: number
   statusEvents: string[]
   toastEvents: string[]
-  syntheticParts: string[]
+  nudgeParts: string[]
   timedOut: boolean
   durationMs: number
 }
@@ -65,7 +65,7 @@ function newResult(name: string, sessionID: string): TestResult {
     idleEvents: 0,
     statusEvents: [],
     toastEvents: [],
-    syntheticParts: [],
+    nudgeParts: [],
     timedOut: false,
     durationMs: 0,
   }
@@ -132,6 +132,8 @@ async function runTest(
 
   let eventCount = 0
   const partTypes = new Map<string, "reasoning" | "text">()
+  // messageID → role, used to qualify the text-prefix fallback below
+  const messageRoles = new Map<string, string>()
   try {
     eventLoop:
     for await (const globalEvent of stream) {
@@ -142,18 +144,42 @@ async function runTest(
       eventCount++
 
       switch (event.type) {
+        case "message.updated": {
+          const info = event.properties.info as { id?: string; sessionID?: string; role?: string }
+          if (info?.id && info.role && (!info.sessionID || info.sessionID === sessionID)) {
+            messageRoles.set(info.id, info.role)
+          }
+          break
+        }
+
         case "message.part.updated": {
-          const part = event.properties.part as { id?: string; type?: string; sessionID?: string; synthetic?: boolean; text?: string }
+          const part = event.properties.part as {
+            id?: string
+            messageID?: string
+            type?: string
+            sessionID?: string
+            text?: string
+            metadata?: { [key: string]: unknown }
+          }
           // Track part type for delta events
           if (part.type === "reasoning" || part.type === "text") {
             if (part.id && part.sessionID === sessionID) {
               partTypes.set(part.id, part.type as "reasoning" | "text")
             }
           }
-          // Check for synthetic text parts (nudge messages)
-          if (part.type === "text" && part.synthetic && part.sessionID === sessionID) {
-            result.syntheticParts.push((part.text ?? "").slice(0, 200))
-            console.log(`  [${name}] SYNTHETIC TEXT (nudge): ${(part.text ?? "").slice(0, 80)}...`)
+          // Detect nudge messages injected by the plugin: prefer the
+          // machine-readable metadata marker; the text-prefix fallback requires
+          // a user-role message so assistant output that merely mentions the
+          // prefix is not misclassified as a nudge.
+          const isNudgePart =
+            part.type === "text" &&
+            part.sessionID === sessionID &&
+            (part.metadata?.source === "loop-detector" ||
+              (messageRoles.get(part.messageID ?? "") === "user" &&
+                (part.text ?? "").startsWith("[Loop Detector]")))
+          if (isNudgePart) {
+            result.nudgeParts.push((part.text ?? "").slice(0, 200))
+            console.log(`  [${name}] NUDGE TEXT (nudge): ${(part.text ?? "").slice(0, 80)}...`)
           }
           break
         }
@@ -191,9 +217,12 @@ async function runTest(
           lastIdleTime = Date.now()
           console.log(`  [${name}] session.idle #${result.idleEvents} (${(elapsed / 1000).toFixed(1)}s)`)
 
-          // If we already got a toast, this is the final idle after abort
-          if (result.toastEvents.length > 0) {
-            console.log(`  [${name}] Final abort confirmed (toast + idle), stopping`)
+          // Nudge toasts carry an "— Nudge" suffix ("— Nudge" / "— Nudge Skipped");
+          // only the final abort toast has the bare "Loop Detected" /
+          // "Spiral Detected" title. A nudge toast must not end the run.
+          const abortConfirmed = result.toastEvents.some((t) => !t.includes("— Nudge"))
+          if (abortConfirmed) {
+            console.log(`  [${name}] Final abort confirmed (abort toast + idle), stopping`)
             break eventLoop
           }
 
@@ -322,14 +351,14 @@ async function main() {
     for (const t of r.toastEvents) {
       console.log(`    - ${t}`)
     }
-    console.log(`  Synthetic:  ${r.syntheticParts.length}`)
-    for (const s of r.syntheticParts) {
-      console.log(`    - ${s.slice(0, 120)}`)
+    console.log(`  Nudge msgs: ${r.nudgeParts.length}`)
+    for (const n of r.nudgeParts) {
+      console.log(`    - ${n.slice(0, 120)}`)
     }
     console.log(`  Timed out:  ${r.timedOut}`)
 
     // Assessment
-    const loopDetected = r.toastEvents.length > 0 || r.syntheticParts.length > 0
+    const loopDetected = r.toastEvents.length > 0 || r.nudgeParts.length > 0
     console.log(`  Loop detected by plugin: ${loopDetected ? "YES" : "NO"}`)
   }
 }

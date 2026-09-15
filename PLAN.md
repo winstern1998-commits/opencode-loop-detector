@@ -1,5 +1,7 @@
 # opencode-loop-detector 实现计划
 
+> 历史设计稿：本文档记录插件最初的实现计划，部分内容已与当前实现不一致。**行为以 `docs/plugin-design.md` 与源码实现为准。**
+
 本文档是 [DESIGN.md](./DESIGN.md) 的配套实现指南，供 opencode 会话照此实现。
 
 **开始实现前，必须先完整阅读 `DESIGN.md`。** 本文档只规定文件结构、步骤和验收标准，算法细节和设计原理见 DESIGN.md。

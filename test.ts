@@ -7,7 +7,7 @@
  * Run: bun test ./test.ts
  */
 
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, jest } from "bun:test"
 import { create, recovery, DEFAULTS, isLoopOutcome } from "./.opencode/loop.ts"
 import {
   create as createSpiral,
@@ -317,7 +317,7 @@ describe("recovery", () => {
     expect(decision.action).toBe("nudge")
     if (decision.action === "nudge") {
       expect(decision.reminder).toContain("42")
-      expect(decision.reminder).toContain("<system-reminder>")
+      expect(decision.reminder).toContain("[Loop Detector]")
     }
   })
 
@@ -556,22 +556,56 @@ import LoopDetector from "./.opencode/opencode-loop-detector.ts"
 
 // --- Mock helpers ---------------------------------------------------------
 
-function createMockClient() {
+function createMockClient(abortDelayMs = 0, abortHangs = false) {
   const calls = {
     abort: [] as string[],
-    promptAsync: [] as { id: string; parts: Array<{ type: string; text: string; synthetic?: boolean }> }[],
+    sessionGet: [] as string[],
+    promptAsync: [] as {
+      id: string
+      parts: Array<{ type: string; text: string; synthetic?: boolean; metadata?: { [key: string]: unknown } }>
+      agent?: string
+      model?: { providerID: string; modelID: string }
+      variant?: string
+    }[],
     showToast: [] as Array<{ title?: string; message: string; variant: string }>,
+    // Ordered call log used to assert sequencing (e.g. abort settles before nudge)
+    events: [] as string[],
   }
   const client = {
     session: {
       abort: async (opts: { path: { id: string } }) => {
+        if (abortHangs) await new Promise<void>(() => {})
+        else if (abortDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, abortDelayMs))
         calls.abort.push(opts.path.id)
+        calls.events.push("abort")
+      },
+      get: async (opts: { path: { id: string } }) => {
+        calls.sessionGet.push(opts.path.id)
+        return {
+          data: {
+            id: opts.path.id,
+            agent: "session-record-agent",
+            model: { id: "glm-5.2", providerID: "zai-coding-plan", variant: "high" },
+          },
+        }
       },
       promptAsync: async (opts: {
         path: { id: string }
-        body: { parts: Array<{ type: string; text: string; synthetic?: boolean }> }
+        body: {
+          parts: Array<{ type: string; text: string; synthetic?: boolean; metadata?: { [key: string]: unknown } }>
+          agent?: string
+          model?: { providerID: string; modelID: string }
+          variant?: string
+        }
       }) => {
-        calls.promptAsync.push({ id: opts.path.id, parts: opts.body.parts })
+        calls.promptAsync.push({
+          id: opts.path.id,
+          parts: opts.body.parts,
+          agent: opts.body.agent,
+          model: opts.body.model,
+          variant: opts.body.variant,
+        })
+        calls.events.push("prompt")
       },
     },
     tui: {
@@ -612,12 +646,23 @@ function makeIdleEvent(sessionID: string) {
   }
 }
 
+function makeSessionUpdatedEvent(
+  sessionID: string,
+  info: { title?: string; model?: { id: string; providerID: string; variant?: string }; agent?: string },
+) {
+  return {
+    type: "session.updated" as const,
+    properties: { info: { id: sessionID, ...info } },
+  }
+}
+
 // --- Timing tests ---------------------------------------------------------
 
 describe("plugin timing simulation", () => {
   // Isolated stats file per test — prevents writes to the real
   // ~/.loop-detector/stats.json (recordStat/saveStats in handleDetected).
-  const tmpStatsPath = (tag: string) => `/tmp/loop-detector-timing-${tag}-${Date.now()}.json`
+  const tmpStatsPath = (tag: string) =>
+    `/tmp/loop-detector-timing-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
 
   test("detects reasoning loop → abort → nudge on idle", async () => {
     const { client, calls } = createMockClient()
@@ -640,8 +685,444 @@ describe("plugin timing simulation", () => {
     expect(calls.promptAsync.length).toBe(1)
     expect(calls.promptAsync[0].id).toBe("s1")
     expect(calls.promptAsync[0].parts[0].type).toBe("text")
-    expect(calls.promptAsync[0].parts[0].synthetic).toBe(true)
-    expect(calls.promptAsync[0].parts[0].text).toContain("<system-reminder>")
+    // Nudge messages are visible in the TUI (no synthetic flag)
+    expect(calls.promptAsync[0].parts[0].synthetic).toBeUndefined()
+    expect(calls.promptAsync[0].parts[0].text).toContain("[Loop Detector]")
+    // Machine-readable marker for E2E / other plugins
+    expect(calls.promptAsync[0].parts[0].metadata).toEqual({ source: "loop-detector" })
+    // No session.updated seen → no agent snapshot: agent/model/variant are
+    // recovered via session.get (never send a naked message that would rewrite
+    // the session agent)
+    expect(calls.sessionGet).toEqual(["s1"])
+    expect(calls.promptAsync[0].agent).toBe("session-record-agent")
+    expect(calls.promptAsync[0].model).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.2" })
+    expect(calls.promptAsync[0].variant).toBe("high")
+    // Toast fires after the send with success semantics
+    expect(calls.showToast.length).toBe(1)
+    expect(calls.showToast[0].variant).toBe("warning")
+    expect(calls.showToast[0].message).toContain("Reminder sent to redirect")
+    await hooks.dispose!()
+  })
+
+  test("nudge carries agent/model/variant snapshot (prevents default-agent rewrite)", async () => {
+    const { client, calls } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("agent-snapshot") },
+    )
+
+    await hooks.event!({
+      event: makeSessionUpdatedEvent("s10", {
+        title: "subagent task",
+        model: { id: "glm-5.2", providerID: "zai-coding-plan", variant: "high" },
+        agent: "ascend-op",
+      }) as any,
+    })
+
+    // Detection snapshots agent/model/variant at this point
+    await hooks.event!({ event: makePartUpdatedEvent("s10", "text", repeat("0123456789", 60)) as any })
+
+    // Simulate opencode rewriting the session to the default agent after abort
+    await hooks.event!({
+      event: makeSessionUpdatedEvent("s10", {
+        title: "subagent task",
+        model: { id: "glm-5.2", providerID: "zai-coding-plan" },
+        agent: "orchestrator",
+      }) as any,
+    })
+    await hooks.event!({ event: makeIdleEvent("s10") as any })
+
+    expect(calls.promptAsync.length).toBe(1)
+    expect(calls.promptAsync[0].agent).toBe("ascend-op")
+    expect(calls.promptAsync[0].model).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.2" })
+    expect(calls.promptAsync[0].variant).toBe("high")
+    // Snapshot present → no session.get round-trip needed
+    expect(calls.sessionGet.length).toBe(0)
+    await hooks.dispose!()
+  })
+
+  test("variant 'default' is normalized away (snapshot and session.get recovery)", async () => {
+    const { client, calls } = createMockClient()
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("variant-default") },
+    )
+
+    // Snapshot path: session.updated reports the literal "default"
+    await hooks.event!({
+      event: makeSessionUpdatedEvent("s22", {
+        model: { id: "glm-5.2", providerID: "zai-coding-plan", variant: "default" },
+        agent: "ascend-op",
+      }) as any,
+    })
+    await hooks.event!({ event: makePartUpdatedEvent("s22", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s22") as any })
+    expect(calls.promptAsync[0].agent).toBe("ascend-op")
+    expect(calls.promptAsync[0].variant).toBeUndefined()
+
+    // Recovery path: the session record also reports "default"
+    client.session.get = (async (opts: { path: { id: string } }) => ({
+      data: {
+        id: opts.path.id,
+        agent: "recovered-agent",
+        model: { id: "glm-5.2", providerID: "zai-coding-plan", variant: "default" },
+      },
+    })) as any
+    await hooks.event!({ event: makePartUpdatedEvent("s23", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s23") as any })
+    expect(calls.promptAsync[1].agent).toBe("recovered-agent")
+    expect(calls.promptAsync[1].variant).toBeUndefined()
+    await hooks.dispose!()
+  })
+
+  test("nudge skipped when session.get finds no agent (never send naked)", async () => {
+    const tmpPath = tmpStatsPath("skip-no-agent")
+    const { client, calls } = createMockClient()
+    client.session.get = (async (opts: { path: { id: string } }) => {
+      calls.sessionGet.push(opts.path.id)
+      return { data: { id: opts.path.id } }
+    }) as any
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    await hooks.event!({ event: makePartUpdatedEvent("s14", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s14") as any })
+
+    // No promptAsync (would rewrite the session agent), error toast instead
+    expect(calls.promptAsync.length).toBe(0)
+    expect(calls.sessionGet).toEqual(["s14"])
+    expect(calls.showToast.length).toBe(1)
+    expect(calls.showToast[0].variant).toBe("error")
+    expect(calls.showToast[0].message).toContain("agent unknown")
+    // Neither the counter nor the cumulative stats are consumed
+    const loaded = loadStats(tmpPath)
+    expect(loaded.totals.nudge).toBe(0)
+    expect(loaded.totals.detect).toBe(1)
+    // Detectors reset and aborting cleared → a new loop is detected again
+    await hooks.event!({ event: makePartUpdatedEvent("s14", "text", repeat("0123456789", 60)) as any })
+    expect(loadStats(tmpPath).totals.detect).toBe(2)
+    await hooks.dispose!()
+  })
+
+  test("nudge skipped when session.get throws (never send naked)", async () => {
+    const tmpPath = tmpStatsPath("skip-get-throws")
+    const { client, calls } = createMockClient()
+    client.session.get = (async () => {
+      throw new Error("lookup boom")
+    }) as any
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    await hooks.event!({ event: makePartUpdatedEvent("s15", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s15") as any })
+
+    expect(calls.promptAsync.length).toBe(0)
+    expect(calls.showToast.length).toBe(1)
+    expect(calls.showToast[0].variant).toBe("error")
+    expect(loadStats(tmpPath).totals.nudge).toBe(0)
+    await hooks.dispose!()
+  })
+
+  test("nudge waits for in-flight abort before sending prompt (abort race)", async () => {
+    const { client, calls } = createMockClient(100)
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("abort-race") },
+    )
+
+    // Start detection without awaiting: session.idle arrives while the slow
+    // abort is still in flight (the real-world race).
+    const detecting = hooks.event!({ event: makePartUpdatedEvent("s11", "text", repeat("0123456789", 60)) as any })
+    const idleDone = hooks.event!({ event: makeIdleEvent("s11") as any })
+
+    // Direct negative assertion: while the abort is still in flight, no nudge
+    // may have been sent yet.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(calls.promptAsync.length).toBe(0)
+    expect(calls.abort.length).toBe(0)
+
+    await idleDone
+    await detecting
+
+    expect(calls.promptAsync.length).toBe(1)
+    // The abort must have settled before the nudge was sent
+    expect(calls.events).toEqual(["abort", "prompt"])
+    await hooks.dispose!()
+  })
+
+  test("abort wait timeout → best-effort nudge with error toast (fake timers)", async () => {
+    jest.useFakeTimers()
+    try {
+      const tmpPath = tmpStatsPath("abort-timeout")
+      const { client, calls } = createMockClient(0, true)
+      const hooks = await LoopDetector(
+        { client, serverUrl: new URL("http://localhost:0") } as any,
+        { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+      )
+
+      // Detection returns immediately even though the abort never settles
+      // (the idle timeout is armed unconditionally).
+      await hooks.event!({ event: makePartUpdatedEvent("s12", "text", repeat("0123456789", 60)) as any })
+
+      // session.idle arrives → executePendingAction blocks on the abort wait
+      const idleDone = hooks.event!({ event: makeIdleEvent("s12") as any })
+      await Promise.resolve()
+      jest.advanceTimersByTime(10000)
+      await idleDone
+
+      // Best-effort send still happens, but the toast reports the degraded state
+      expect(calls.promptAsync.length).toBe(1)
+      expect(calls.showToast.length).toBe(1)
+      expect(calls.showToast[0].variant).toBe("error")
+      expect(calls.showToast[0].message).toContain("still aborting")
+      // The send counts toward the nudge budget (prevents endless timeout
+      // nudges that never escalate to abort)
+      expect(loadStats(tmpPath).totals.nudge).toBe(1)
+
+      // Escalation proof: with max_nudges=1 the next detection must abort
+      await hooks.event!({ event: makePartUpdatedEvent("s12", "text", repeat("0123456789", 60)) as any })
+      const idle2 = hooks.event!({ event: makeIdleEvent("s12") as any })
+      await Promise.resolve()
+      jest.advanceTimersByTime(10000)
+      await idle2
+      expect(calls.showToast.length).toBe(2)
+      expect(calls.showToast[1].title).toBe("Loop Detected")
+      expect(calls.showToast[1].variant).toBe("warning")
+      expect(loadStats(tmpPath).totals.abort).toBe(1)
+      await hooks.dispose!()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("hung abort with no idle → idle timeout still fires (M1)", async () => {
+    jest.useFakeTimers()
+    try {
+      const { client, calls } = createMockClient(0, true)
+      const hooks = await LoopDetector(
+        { client, serverUrl: new URL("http://localhost:0") } as any,
+        { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpStatsPath("hung-abort") },
+      )
+
+      // Detection must return immediately and arm the idle timeout even though
+      // the abort HTTP call never settles.
+      await hooks.event!({ event: makePartUpdatedEvent("s13", "text", repeat("0123456789", 60)) as any })
+      expect(calls.promptAsync.length).toBe(0)
+
+      // No session.idle ever arrives: the 5s idle timeout fires and starts
+      // executePendingAction, which then waits ABORT_WAIT_MS for the hung abort.
+      jest.advanceTimersByTime(5000)
+      jest.advanceTimersByTime(10000)
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+
+      expect(calls.promptAsync.length).toBe(1)
+      expect(calls.showToast.length).toBe(1)
+      expect(calls.showToast[0].variant).toBe("error")
+      await hooks.dispose!()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("stale session.idle during abort wait does not reset the nudge count (P0)", async () => {
+    const tmpPath = tmpStatsPath("stale-idle")
+    const { client, calls } = createMockClient(100)
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // First loop → nudge; a duplicate idle lands while executePendingAction is
+    // still waiting for the abort (pendingAction cleared, aborting true).
+    await hooks.event!({ event: makePartUpdatedEvent("s18", "text", repeat("0123456789", 60)) as any })
+    const firstIdle = hooks.event!({ event: makeIdleEvent("s18") as any })
+    await hooks.event!({ event: makeIdleEvent("s18") as any })
+    await firstIdle
+
+    expect(calls.promptAsync.length).toBe(1)
+    expect(loadStats(tmpPath).totals.nudge).toBe(1)
+
+    // The stale idle must not have reset nudgeCount → the second detection
+    // escalates to abort instead of nudging again
+    await hooks.event!({ event: makePartUpdatedEvent("s18", "text", repeat("0123456789", 60)) as any })
+    const abortIdle = hooks.event!({ event: makeIdleEvent("s18") as any })
+    await hooks.event!({ event: makeIdleEvent("s18") as any })
+    await abortIdle
+
+    expect(loadStats(tmpPath).totals).toEqual({ detect: 2, nudge: 1, abort: 1 })
+    expect(calls.showToast.length).toBe(2)
+    expect(calls.showToast[1].title).toBe("Loop Detected")
+    await hooks.dispose!()
+  })
+
+  test("session.get timeout → nudge skipped (fake timers)", async () => {
+    jest.useFakeTimers()
+    try {
+      const tmpPath = tmpStatsPath("get-timeout")
+      const { client, calls } = createMockClient()
+      client.session.get = (() => new Promise(() => {})) as any
+      const hooks = await LoopDetector(
+        { client, serverUrl: new URL("http://localhost:0") } as any,
+        { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+      )
+
+      await hooks.event!({ event: makePartUpdatedEvent("s17", "text", repeat("0123456789", 60)) as any })
+      const idleDone = hooks.event!({ event: makeIdleEvent("s17") as any })
+      // Step the clock until the bounded session.get lookup rejects (5s cap)
+      for (let i = 0; i < 60 && calls.showToast.length === 0; i++) {
+        await Promise.resolve()
+        jest.advanceTimersByTime(100)
+      }
+      await idleDone
+
+      expect(calls.promptAsync.length).toBe(0)
+      expect(calls.showToast.length).toBe(1)
+      expect(calls.showToast[0].variant).toBe("error")
+      expect(calls.showToast[0].message).toContain("agent unknown")
+      expect(loadStats(tmpPath).totals.nudge).toBe(0)
+      await hooks.dispose!()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("final abort also waits for the in-flight abort promise", async () => {
+    const tmpPath = tmpStatsPath("abort-wait")
+    const { client, calls } = createMockClient(100)
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    // First loop → nudge (count=1)
+    await hooks.event!({ event: makePartUpdatedEvent("s19", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s19") as any })
+    expect(loadStats(tmpPath).totals.nudge).toBe(1)
+
+    // Second loop → abort decision: the final tidy-up must wait for the abort
+    await hooks.event!({ event: makePartUpdatedEvent("s19", "text", repeat("0123456789", 60)) as any })
+    const abortIdle = hooks.event!({ event: makeIdleEvent("s19") as any })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // While the abort is still in flight, only the nudge toast exists
+    expect(calls.showToast.length).toBe(1)
+
+    await abortIdle
+    expect(calls.showToast.length).toBe(2)
+    expect(calls.showToast[1].title).toBe("Loop Detected")
+    expect(loadStats(tmpPath).totals.abort).toBe(1)
+    await hooks.dispose!()
+  })
+
+  test("stale idle after abort wait timeout does not reset the nudge count (fake timers)", async () => {
+    jest.useFakeTimers()
+    try {
+      const tmpPath = tmpStatsPath("stale-after-timeout")
+      const { client, calls } = createMockClient(12000)
+      const hooks = await LoopDetector(
+        { client, serverUrl: new URL("http://localhost:0") } as any,
+        { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+      )
+
+      // First loop: the abort takes 12s, so the 10s abort wait times out.
+      await hooks.event!({ event: makePartUpdatedEvent("s20", "text", repeat("0123456789", 60)) as any })
+      const idleDone = hooks.event!({ event: makeIdleEvent("s20") as any })
+      await Promise.resolve()
+      jest.advanceTimersByTime(10000)
+      await idleDone
+      expect(loadStats(tmpPath).totals.nudge).toBe(1)
+
+      // The old abort finally settles → the server publishes a delayed idle.
+      jest.advanceTimersByTime(2000)
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      await hooks.event!({ event: makeIdleEvent("s20") as any })
+
+      // The delayed idle must not have wiped nudgeCount: the next detection
+      // escalates to abort instead of nudging again.
+      await hooks.event!({ event: makePartUpdatedEvent("s20", "text", repeat("0123456789", 60)) as any })
+      const abortIdle = hooks.event!({ event: makeIdleEvent("s20") as any })
+      await Promise.resolve()
+      jest.advanceTimersByTime(10000)
+      await abortIdle
+      expect(loadStats(tmpPath).totals).toEqual({ detect: 2, nudge: 1, abort: 1 })
+      expect(calls.showToast[1].title).toBe("Loop Detected")
+      await hooks.dispose!()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("hung promptAsync times out (counted) and state migration still completes (fake timers)", async () => {
+    jest.useFakeTimers()
+    try {
+      const tmpPath = tmpStatsPath("send-timeout")
+      const { client, calls } = createMockClient()
+      let sendAttempts = 0
+      client.session.promptAsync = (() => {
+        sendAttempts++
+        return new Promise(() => {})
+      }) as any
+      const hooks = await LoopDetector(
+        { client, serverUrl: new URL("http://localhost:0") } as any,
+        { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+      )
+
+      await hooks.event!({ event: makePartUpdatedEvent("s21", "text", repeat("0123456789", 60)) as any })
+      const idleDone = hooks.event!({ event: makeIdleEvent("s21") as any })
+      // Step the clock until the bounded send times out (5s cap)
+      for (let i = 0; i < 60 && loadStats(tmpPath).totals.nudge === 0; i++) {
+        await Promise.resolve()
+        jest.advanceTimersByTime(100)
+      }
+      await idleDone
+
+      expect(sendAttempts).toBe(1)
+      // A timed-out send counts as "dispatched, unconfirmed"
+      expect(loadStats(tmpPath).totals.nudge).toBe(1)
+
+      // State machine advanced despite the hung send → next detection aborts
+      await hooks.event!({ event: makePartUpdatedEvent("s21", "text", repeat("0123456789", 60)) as any })
+      await hooks.event!({ event: makeIdleEvent("s21") as any })
+      expect(loadStats(tmpPath).totals).toEqual({ detect: 2, nudge: 1, abort: 1 })
+      expect(calls.showToast[1].title).toBe("Loop Detected")
+      await hooks.dispose!()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("promptAsync rejection does not consume nudge budget and resets detectors", async () => {
+    const tmpPath = tmpStatsPath("prompt-reject")
+    const { client, calls } = createMockClient()
+    let attempts = 0
+    client.session.promptAsync = (async () => {
+      attempts++
+      throw new Error("send boom")
+    }) as any
+    const hooks = await LoopDetector(
+      { client, serverUrl: new URL("http://localhost:0") } as any,
+      { min_chars: 10, check_interval: 1, min_period: 3, max_nudges: 1, stats_path: tmpPath },
+    )
+
+    await hooks.event!({ event: makePartUpdatedEvent("s16", "text", repeat("0123456789", 60)) as any })
+    await hooks.event!({ event: makeIdleEvent("s16") as any })
+
+    expect(attempts).toBe(1)
+    expect(loadStats(tmpPath).totals.detect).toBe(1)
+    expect(loadStats(tmpPath).totals.nudge).toBe(0)
+    // Failure path stays log-only: no success toast
+    expect(calls.showToast.length).toBe(0)
+
+    // Detectors were reset and aborting cleared → the next loop triggers again
+    await hooks.event!({ event: makePartUpdatedEvent("s16", "text", repeat("0123456789", 60)) as any })
+    expect(loadStats(tmpPath).totals.detect).toBe(2)
+    await hooks.event!({ event: makeIdleEvent("s16") as any })
+    expect(attempts).toBe(2)
+    expect(loadStats(tmpPath).totals.nudge).toBe(0)
+    await hooks.dispose!()
   })
 
   test("second loop after nudge → abort → showToast", async () => {

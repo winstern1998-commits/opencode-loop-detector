@@ -1,5 +1,7 @@
 # opencode-loop-detector 设计文档
 
+> 历史设计稿：本文档记录插件最初的设计推演与 PR #21112 对照，部分章节（如 4.2 / 6 / 7 中的 `synthetic` nudge）已与当前实现不一致。**行为以 `docs/plugin-design.md` 与源码实现为准。**
+
 检测 LLM 在 reasoning（思考）和 text（输出）阶段陷入死循环的 opencode 插件。
 
 将 opencode 的 loop detection 内置实现（PR #21112，`feat: implement loop detection for thinking and text`）改造为纯插件形式，无需修改 opencode 源码。

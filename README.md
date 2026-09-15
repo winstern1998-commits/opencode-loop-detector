@@ -17,7 +17,7 @@ The plugin monitors streaming deltas from opencode's event system. Two parallel 
 
 When either detector triggers, the plugin intervenes:
 
-1. **Nudge** — interrupts the current generation and injects a synthetic reminder telling the model to stop repeating and try a different approach.
+1. **Nudge** — interrupts the current generation and posts a visible reminder (prefixed `[Loop Detector]`) telling the model to stop repeating and try a different approach. The reminder resumes the session with its original agent/model. If the session agent cannot be determined (no snapshot and the lookup fails or times out), the nudge is skipped: the generation is still interrupted and an error toast is shown, but no reminder is sent and no nudge budget is consumed.
 2. **Abort** — if the model loops again after being nudged (up to `max_nudges` times), the session is aborted with a toast notification.
 
 The loop detection algorithm requires ≥ `min_repeats` (default 4) repetitions rather than just 2, which prevents false positives on paths, identifiers, and other naturally repeating structures.
@@ -108,11 +108,11 @@ Both detectors run independently on **reasoning** and **text** streams (4 detect
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-Then copy `opencode-loop-detector.ts`, `loop.ts`, and `spiral.ts` to the appropriate plugins directory.
+Then copy `opencode-loop-detector.ts`, `loop.ts`, `spiral.ts`, and `stats.ts` to the appropriate plugins directory.
 
 #### Project-level
 
-Place `opencode-loop-detector.ts`, `loop.ts`, and `spiral.ts` in `.opencode/plugins/`. They are auto-loaded at startup — no config needed.
+Place `opencode-loop-detector.ts`, `loop.ts`, `spiral.ts`, and `stats.ts` in `.opencode/plugins/`. They are auto-loaded at startup — no config needed.
 
 #### Global
 
@@ -157,17 +157,17 @@ A `loop_detector_stats` tool is registered for the main agent to query cumulativ
 | `spiral_dup_threshold` | 0.5 | Spiral detector: duplicate sentence ratio threshold |
 | `spiral_min_sentence_len` | 15 | Spiral detector: ignore sentences shorter than this |
 | `spiral_min_sentences` | 20 | Spiral detector: minimum sentence count in window |
-| `reminder` | built-in | Nudge reminder text (supports `{period}` placeholder) |
+| `reminder` | built-in | Custom nudge message for loop detections only (supports `{period}` placeholder; overrides the built-in `[Loop Detector]` reminder; the spiral path uses a fixed template) |
 | `stats_path` | `~/.loop-detector/stats.json` | Path to the cumulative stats file; usually left at default |
 
-The defaults (min_repeats=4, max_nudges=2) are built into the source. To override them, reference the plugin in the `plugin` array with custom options:
+The defaults (min_repeats=4, max_nudges=2) are built into the source. To override them, reference the plugin in the `plugin` array with custom options. When overriding `reminder`, keeping the `[Loop Detector]` prefix is recommended so the message stays recognizable (E2E detection and other plugins rely on the `metadata.source = "loop-detector"` marker, not the prefix):
 
 ```jsonc
 {
   "plugin": [
     ["./plugins/opencode-loop-detector.ts", {
       "min_repeats": 6,
-      "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
+      "reminder": "[Loop Detector] Stop repeating (period ~{period} chars). Try a different approach."
     }]
   ]
 }
@@ -226,7 +226,7 @@ MIT
 
 任一检测器触发时，插件介入：
 
-1. **Nudge（轻推）** — 中断当前生成，注入一条合成提醒，告诉模型停止重复并尝试不同方法。
+1. **Nudge（轻推）** — 中断当前生成，发送一条可见的提醒消息（带 `[Loop Detector]` 前缀），告诉模型停止重复并尝试不同方法；提醒消息以原 agent/model 恢复生成。若无法确定 session 的 agent（快照缺失且查询失败/超时），nudge 会被跳过：仍中断生成并弹出 error toast，但不发送提醒、不消耗 nudge 额度。
 2. **Abort（中止）** — 如果模型在被 nudge 后（最多 `max_nudges` 次）再次循环，则中止 session 并弹出 toast 通知。
 
 Loop 检测算法要求尾部出现 ≥ `min_repeats`（默认 4）次重复才触发，而非仅 2 次，从而避免对路径、标识符等自然重复结构的误报。
@@ -317,11 +317,11 @@ Routes are defined in the router module. Error handling wraps async handlers.
 git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 ```
 
-然后将 `opencode-loop-detector.ts`、`loop.ts` 和 `spiral.ts` 复制到对应的 plugins 目录中。
+然后将 `opencode-loop-detector.ts`、`loop.ts`、`spiral.ts` 和 `stats.ts` 复制到对应的 plugins 目录中。
 
 #### 项目级
 
-将 `opencode-loop-detector.ts`、`loop.ts` 和 `spiral.ts` 放在 `.opencode/plugins/` 目录中。启动时自动加载，无需配置。
+将 `opencode-loop-detector.ts`、`loop.ts`、`spiral.ts` 和 `stats.ts` 放在 `.opencode/plugins/` 目录中。启动时自动加载，无需配置。
 
 #### 全局
 
@@ -366,17 +366,17 @@ git clone https://github.com/winstern1998-commits/opencode-loop-detector.git
 | `spiral_dup_threshold` | 0.5 | Spiral 检测器：重复句子率阈值 |
 | `spiral_min_sentence_len` | 15 | Spiral 检测器：忽略短于此长度的句子 |
 | `spiral_min_sentences` | 20 | Spiral 检测器：窗口内最少句子数 |
-| `reminder` | 内置 | nudge 提醒文本（支持 `{period}` 占位符） |
+| `reminder` | 内置 | 仅用于 loop 检测的自定义 nudge 消息（支持 `{period}` 占位符；覆盖内置的 `[Loop Detector]` 提醒；spiral 路径使用固定模板） |
 | `stats_path` | `~/.loop-detector/stats.json` | 累计统计文件路径，一般保持默认 |
 
-默认值（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，在 `plugin` 数组中引用插件并传入自定义参数：
+默认值（min_repeats=4, max_nudges=2）已内置在源码中。如需覆盖，在 `plugin` 数组中引用插件并传入自定义参数。覆盖 `reminder` 时建议保留 `[Loop Detector]` 前缀以便识别（E2E 检测与其他插件依赖的是 `metadata.source = "loop-detector"` 标记，而非前缀）：
 
 ```jsonc
 {
   "plugin": [
     ["./plugins/opencode-loop-detector.ts", {
       "min_repeats": 6,
-      "reminder": "Stop repeating (period ~{period} chars). Try a different approach."
+      "reminder": "[Loop Detector] Stop repeating (period ~{period} chars). Try a different approach."
     }]
   ]
 }

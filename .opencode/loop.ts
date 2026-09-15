@@ -27,8 +27,8 @@ export const DEFAULTS = {
 } as const
 
 const REMINDER =
-  "<system-reminder>\nYour output is repeating in a loop with period ~{period} characters. " +
-  "Stop repeating and take a different, concrete action.\n</system-reminder>"
+  "[Loop Detector] Your output is repeating in a loop with period ~{period} characters. " +
+  "Stop repeating and take a different, concrete action."
 
 const ALPHANUMERIC = /[\p{L}\p{N}]/u
 
